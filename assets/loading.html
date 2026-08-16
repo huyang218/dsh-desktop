@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Harness</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+    background: #101014; color: #d5d5dc;
+    font: 15px/1.6 -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+  }
+  .spinner {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: 3px solid #2c2c34; border-top-color: #4c8dff;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hint { color: #7a7a86; font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="spinner"></div>
+  <div>正在启动 DeepSeek Harness…</div>
+  <div class="hint">首次启动会下载并安装 dsh 运行时,可能需要几分钟</div>
+</body>
+</html>

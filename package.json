@@ -1,0 +1,52 @@
+{
+  "name": "dsh-shell",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop shell for DeepSeek Harness: installs/updates the dsh runtime, owns the server process and storage, and wraps the Web UI in a window.",
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
+    "predist": "npm run seed",
+    "dist": "electron-builder --mac dir",
+    "predist:dmg": "npm run seed",
+    "dist:dmg": "electron-builder --mac dmg"
+  },
+  "devDependencies": {
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "local.dsh-shell",
+    "productName": "DeepSeek Harness",
+    "directories": {
+      "output": "dist"
+    },
+    "afterPack": "scripts/adhoc-sign.cjs",
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "seed.tar",
+        "to": "runtime-seed.tar"
+      },
+      {
+        "from": "node-runtime.tgz",
+        "to": "node-runtime.tgz"
+      },
+      {
+        "from": "node-runtime.version",
+        "to": "node-runtime.version"
+      }
+    ],
+    "mac": {
+      "identity": null,
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.developer-tools"
+    }
+  }
+}

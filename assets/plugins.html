@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>插件管理</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; gap: 14px; box-sizing: border-box; padding: 18px;
+    background: #141418; color: #d5d5dc;
+    font: 13px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+  }
+  h1 { margin: 0; font-size: 16px; color: #e8e8ee; }
+  .hint { color: #85858f; font-size: 12px; }
+  .row { display: flex; gap: 8px; }
+  input {
+    flex: 1; padding: 8px 10px; border-radius: 7px; border: 1px solid #33333b;
+    background: #1d1d23; color: #e8e8ee; font: inherit; outline: none;
+  }
+  input:focus { border-color: #4c6bd8; }
+  button {
+    appearance: none; border: 1px solid #33333b; border-radius: 7px; cursor: pointer;
+    background: #232329; color: #c8c8d0; font: inherit; padding: 8px 14px; white-space: nowrap;
+  }
+  button:hover:not(:disabled) { background: #2c2c34; color: #fff; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button.primary { border-color: #3a4f9e; background: #26304f; color: #b9c8ff; }
+  button.primary:hover:not(:disabled) { background: #2e3a61; }
+  button.danger:hover:not(:disabled) { border-color: #8a3a3a; color: #ffb9b9; }
+  #list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+  .plugin {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    background: #1b1b21; border: 1px solid #26262d; border-radius: 8px;
+  }
+  .plugin .name { font-weight: 600; color: #e2e2e8; }
+  .plugin .meta { color: #85858f; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #1f3325; color: #7ed09a; }
+  .badge.off { background: #33261f; color: #d0a37e; }
+  #restart-bar {
+    display: none; align-items: center; gap: 10px; padding: 10px 12px;
+    background: #2b2418; border: 1px solid #4d3d1e; border-radius: 8px; color: #e6c987;
+  }
+  #log {
+    margin: 0; padding: 10px 12px; height: 130px; overflow-y: auto; white-space: pre-wrap;
+    background: #101014; border: 1px solid #26262d; border-radius: 8px;
+    color: #9a9aa4; font: 11px/1.5 ui-monospace, Menlo, monospace;
+  }
+  .empty { color: #6a6a74; padding: 14px; text-align: center; }
+  #modal-mask {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    align-items: center; justify-content: center; z-index: 10;
+  }
+  #modal {
+    width: 520px; max-height: 80vh; overflow-y: auto; box-sizing: border-box;
+    background: #1b1b21; border: 1px solid #33333b; border-radius: 10px; padding: 18px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  #modal h2 { margin: 0; font-size: 14px; color: #e8e8ee; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: #b8b8c2; }
+  .field label .req { color: #d08a7e; }
+  .field .desc { font-size: 11px; color: #787882; }
+  .field input[type="text"], .field input[type="password"], .field input[type="number"],
+  .field select, .field textarea {
+    padding: 7px 9px; border-radius: 6px; border: 1px solid #33333b;
+    background: #16161b; color: #e8e8ee; font: inherit; outline: none;
+  }
+  .field textarea { font-family: ui-monospace, Menlo, monospace; min-height: 60px; }
+  .field input:focus, .field select:focus, .field textarea:focus { border-color: #4c6bd8; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+</style>
+</head>
+<body>
+  <h1>插件管理 <span class="hint">(web profile)</span></h1>
+  <div class="row">
+    <input id="spec" placeholder="npm 包名 / github:user/repo#commit / 本地绝对路径" spellcheck="false">
+    <button class="primary" id="install">安装</button>
+  </div>
+  <div class="hint">Web UI 皮肤、面板等也是插件,同样方式安装。git 直装若被 pnpm 拦下,按日志提示在 profile 的 pnpm-workspace.yaml 里放行后重试。</div>
+  <div id="restart-bar">
+    <span style="flex:1">配置已变更,重启服务后生效(未完成的对话会中断)</span>
+    <button class="primary" id="restart">重启服务</button>
+  </div>
+  <div id="list"><div class="empty">加载中…</div></div>
+  <pre id="log"></pre>
+  <div id="modal-mask">
+    <div id="modal">
+      <h2 id="modal-title"></h2>
+      <div id="modal-fields"></div>
+      <div class="modal-actions">
+        <button id="modal-cancel">取消</button>
+        <button class="primary" id="modal-save">保存配置</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const $ = id => document.getElementById(id)
+    let busy = false
+
+    function appendLog(line) {
+      $('log').textContent += line + '\n'
+      $('log').scrollTop = $('log').scrollHeight
+    }
+    dshPlugins.onLog(appendLog)
+
+    // Renderer failures must never be silent: surface them in the log pane.
+    window.addEventListener('error', event => appendLog(`✘ 页面错误: ${event.message}`))
+    window.addEventListener('unhandledrejection', event => {
+      appendLog(`✘ 操作失败: ${event.reason?.message ?? event.reason}`)
+    })
+
+    // The config IPC channels live in the Electron main process; running
+    // against a shell that predates them means the app needs a real relaunch
+    // (tray → 退出), not just 重启服务.
+    const configSupported = typeof dshPlugins.configSchema === 'function'
+
+    function setBusy(value) {
+      busy = value
+      for (const b of document.querySelectorAll('button')) b.disabled = value
+    }
+
+    async function refresh() {
+      const plugins = await dshPlugins.list()
+      const list = $('list')
+      list.textContent = ''
+      if (plugins.length === 0) {
+        list.innerHTML = '<div class="empty">还没有安装插件</div>'
+        return
+      }
+      for (const p of plugins) {
+        const row = document.createElement('div')
+        row.className = 'plugin'
+        const badge = p.active ? '<span class="badge">已启用</span>' : '<span class="badge off">仅依赖</span>'
+        row.innerHTML = `<span class="name"></span>${badge}<span class="meta"></span>`
+          + '<button class="settings">设置</button><button class="danger">卸载</button>'
+        row.querySelector('.name').textContent = p.name
+        row.querySelector('.meta').textContent = `${p.version ?? '?'} · ${p.spec}`
+        row.querySelector('.settings').addEventListener('click', () => openConfig(p.name))
+        row.querySelector('.danger').addEventListener('click', () => run(() => dshPlugins.remove(p.name), `卸载 ${p.name}`))
+        list.appendChild(row)
+      }
+    }
+
+    async function run(op, label) {
+      if (busy) return
+      setBusy(true)
+      appendLog(`▶ ${label}`)
+      try {
+        await op()
+        appendLog(`✔ ${label} 完成`)
+        $('restart-bar').style.display = 'flex'
+      } catch (error) {
+        appendLog(`✘ ${label} 失败: ${error.message}`)
+      } finally {
+        setBusy(false)
+        refresh()
+      }
+    }
+
+    // ── Install-time config form: fields come from the plugin's exported
+    // Schemastery Config schema (read by the shell's probe subprocess). ──
+
+    const SECRET_KEY = /token|secret|password|apikey|api_key/i
+    let modalState = null
+
+    function fieldInput(field, current) {
+      const value = current !== undefined ? current : field.default
+      if (Array.isArray(field.options)) {
+        const select = document.createElement('select')
+        for (const option of field.options) {
+          const el = document.createElement('option')
+          el.value = String(option)
+          el.textContent = String(option)
+          if (String(option) === String(value)) el.selected = true
+          select.appendChild(el)
+        }
+        return select
+      }
+      if (field.type === 'boolean') {
+        const box = document.createElement('input')
+        box.type = 'checkbox'
+        box.checked = Boolean(value)
+        return box
+      }
+      if (field.type === 'string' || field.type === 'number') {
+        const input = document.createElement('input')
+        input.type = field.type === 'number' ? 'number'
+          : (field.role === 'secret' || SECRET_KEY.test(field.key)) ? 'password' : 'text'
+        input.value = value === undefined || value === null ? '' : String(value)
+        input.placeholder = field.default === undefined || field.default === '' ? '' : `默认: ${field.default}`
+        input.spellcheck = false
+        return input
+      }
+      // Arrays and nested objects fall back to a JSON textarea.
+      const area = document.createElement('textarea')
+      area.value = value === undefined ? '' : JSON.stringify(value, null, 2)
+      area.placeholder = 'JSON'
+      return area
+    }
+
+    function readField(field, input) {
+      if (Array.isArray(field.options)) return input.value
+      if (field.type === 'boolean') return input.checked
+      const raw = input.value.trim()
+      if (raw === '') return undefined
+      if (field.type === 'number') {
+        const parsed = Number(raw)
+        return Number.isFinite(parsed) ? parsed : undefined
+      }
+      if (field.type === 'string') return raw
+      try { return JSON.parse(raw) } catch { return undefined }
+    }
+
+    function showConfigModal(name, schema, current) {
+      const fields = $('modal-fields')
+      fields.textContent = ''
+      modalState = { name, rowId: schema.rowId, entries: [] }
+      $('modal-title').textContent = `${name} 配置`
+      for (const field of schema.fields) {
+        const wrap = document.createElement('div')
+        wrap.className = 'field'
+        const label = document.createElement('label')
+        label.textContent = field.key
+        if (field.required) label.innerHTML += ' <span class="req">*</span>'
+        wrap.appendChild(label)
+        const input = fieldInput(field, current[field.key])
+        wrap.appendChild(input)
+        if (field.description) {
+          const desc = document.createElement('div')
+          desc.className = 'desc'
+          desc.textContent = field.description
+          wrap.appendChild(desc)
+        }
+        fields.appendChild(wrap)
+        modalState.entries.push({ field, input })
+      }
+      $('modal-mask').style.display = 'flex'
+    }
+
+    function closeModal() {
+      $('modal-mask').style.display = 'none'
+      modalState = null
+    }
+
+    async function openConfig(name) {
+      if (busy) return
+      if (!configSupported) {
+        appendLog('✘ 当前运行的应用还没有配置通道:请从托盘菜单退出应用后重新打开(仅重启服务不够)')
+        return
+      }
+      try {
+        const schema = await dshPlugins.configSchema(name)
+        if (schema.error) { appendLog(`✘ 读取 ${name} 配置项失败: ${schema.error}`); return }
+        if (!schema.fields.length) { appendLog(`ℹ ${name} 没有可配置项`); return }
+        if (!schema.rowId) { appendLog(`ℹ ${name} 的 bundle patch 未插入与包同名的插件行,无法定位配置目标`); return }
+        const current = await dshPlugins.configGet(name)
+        showConfigModal(name, schema, current)
+      } catch (error) {
+        appendLog(`✘ 读取 ${name} 配置项失败: ${error.message}`)
+      }
+    }
+
+    $('modal-cancel').addEventListener('click', closeModal)
+    $('modal-save').addEventListener('click', async () => {
+      if (!modalState) return
+      // Only values differing from the schema default go into the patch
+      // layer; everything else stays owned by the schema's own defaults.
+      const values = {}
+      for (const { field, input } of modalState.entries) {
+        const value = readField(field, input)
+        if (value === undefined) continue
+        if (JSON.stringify(value) === JSON.stringify(field.default)) continue
+        values[field.key] = value
+      }
+      const { name, rowId } = modalState
+      closeModal()
+      await run(() => dshPlugins.configSet(name, rowId, values), `保存 ${name} 配置`)
+    })
+
+    $('install').addEventListener('click', async () => {
+      const spec = $('spec').value.trim()
+      if (!spec) return
+      const before = new Set((await dshPlugins.list()).map(p => p.name))
+      await run(() => dshPlugins.install(spec), `安装 ${spec}`)
+      if (!configSupported) return
+      // A newly appeared package with config fields gets its form right away.
+      try {
+        const added = (await dshPlugins.list()).filter(p => !before.has(p.name))
+        if (added.length === 1) {
+          const schema = await dshPlugins.configSchema(added[0].name)
+          if (!schema.error && schema.fields.length && schema.rowId) {
+            appendLog(`ℹ ${added[0].name} 提供配置项,请填写`)
+            showConfigModal(added[0].name, schema, await dshPlugins.configGet(added[0].name))
+          }
+        }
+      } catch (error) {
+        appendLog(`✘ 读取新插件配置项失败: ${error.message}`)
+      }
+    })
+    $('spec').addEventListener('keydown', e => { if (e.key === 'Enter') $('install').click() })
+    $('restart').addEventListener('click', async () => {
+      setBusy(true)
+      appendLog('▶ 重启服务…')
+      try {
+        await dshPlugins.restart()
+        appendLog('✔ 服务已重启,插件已生效')
+        $('restart-bar').style.display = 'none'
+      } catch (error) {
+        appendLog(`✘ 重启失败: ${error.message}`)
+      } finally {
+        setBusy(false)
+      }
+    })
+
+    refresh()
+  </script>
+</body>
+</html>
