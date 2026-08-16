@@ -41,9 +41,27 @@ app.setPath('userData', path.join(app.getPath('appData'), 'dsh-shell'))
  *   child?: import('node:child_process').ChildProcess, port?: number,
  *   window?: BrowserWindow, tray?: Tray, runtime?: { slot: string, dir: string, version: string },
  *   toolchain?: ReturnType<typeof findToolchain>, quitting: boolean,
+ *   restarts: number, restartTimer?: NodeJS.Timeout,
  * }}
  */
-const state = { quitting: false }
+const state = { quitting: false, restarts: 0 }
+
+// ── Supervision ─────────────────────────────────────────────────────────────
+// The server can die on its own (an OOM abort inside dsh takes the whole
+// process down with SIGABRT, not an exit code). Bring it back automatically,
+// but bounded: a crash loop must surface to the user instead of spinning.
+
+/** Automatic restarts before the shell stops trying and asks the user. */
+const MAX_AUTO_RESTARTS = 3
+/** Delay before each automatic restart, by attempt number. */
+const RESTART_BACKOFF_MS = [1000, 3000, 8000]
+/** Uptime that earns a server a fresh restart budget. */
+const HEALTHY_UPTIME_MS = 60_000
+
+/** Human-readable cause of a child exit: a signal death carries no code. */
+function describeExit(code, signal) {
+  return signal ? `signal=${signal}` : `code=${code}`
+}
 
 const paths = {}
 function initPaths() {
@@ -85,6 +103,7 @@ function showWindow() {
 async function launchServer() {
   const { window, runtime } = state
   const port = await getFreePort()
+  const startedAt = Date.now()
   const child = await startServer({
     slotDir: runtime.dir,
     port,
@@ -94,20 +113,31 @@ async function launchServer() {
     log,
   })
   child.on('exit', (code, signal) => {
-    log(`dsh server exited (code=${code} signal=${signal})`)
-    if (!state.quitting && state.child === child) {
-      dialog.showErrorBox('dsh 服务已退出', `服务进程意外退出(code=${code})。日志:${paths.logFile}`)
-    }
+    log(`dsh server exited (${describeExit(code, signal)})`)
+    // Only the current child on an unplanned exit is ours to supervise: a
+    // superseded one belongs to whoever replaced it.
+    if (state.quitting || state.child !== child) return
+    state.child = undefined
+    superviseExit({ code, signal, uptimeMs: Date.now() - startedAt })
   })
   state.child = child
   state.port = port
   const healthy = await waitHealthy(port, { aborted: () => state.quitting || state.child !== child })
-  if (!healthy) throw new Error(`服务在超时时间内未就绪(端口 ${port})。日志:${paths.logFile}`)
+  if (!healthy) {
+    // Superseded: the child died (the supervisor owns the retry) or we are
+    // quitting/restarting. Only a live-but-unresponsive server is our error.
+    if (state.quitting || state.child !== child) return
+    throw new Error(`服务在超时时间内未就绪(端口 ${port})。日志:${paths.logFile}`)
+  }
   if (!window.isDestroyed()) await window.loadURL(`http://127.0.0.1:${port}/`)
   log(`dsh ${runtime.version} serving on ${port} (slot ${runtime.slot})`)
 }
 
 async function restartServer() {
+  clearTimeout(state.restartTimer)
+  state.restartTimer = undefined
+  // An explicit restart starts the crash-loop budget over.
+  state.restarts = 0
   const old = state.child
   state.child = undefined
   if (old) await stopServer(old)
@@ -115,6 +145,52 @@ async function restartServer() {
     await state.window.loadFile(path.join(assets, 'loading.html'))
   }
   await launchServer()
+}
+
+/**
+ * Reacts to a server death the shell did not ask for: restart it, backing off
+ * and giving up after {@link MAX_AUTO_RESTARTS} consecutive failures.
+ *
+ * @param {{ code: number | null, signal: string | null, uptimeMs: number }} exit
+ */
+function superviseExit({ code, signal, uptimeMs }) {
+  // A server that ran fine for a while is not part of a crash loop, whatever
+  // happened before it.
+  if (uptimeMs >= HEALTHY_UPTIME_MS) state.restarts = 0
+  if (state.restarts >= MAX_AUTO_RESTARTS) {
+    state.restarts = 0
+    log(`giving up after ${MAX_AUTO_RESTARTS} automatic restarts`)
+    offerRestart(code, signal, `已连续自动重启 ${MAX_AUTO_RESTARTS} 次仍未稳定。`)
+    return
+  }
+  const attempt = ++state.restarts
+  const delayMs = RESTART_BACKOFF_MS[Math.min(attempt, RESTART_BACKOFF_MS.length) - 1]
+  log(`auto-restarting in ${delayMs}ms (attempt ${attempt}/${MAX_AUTO_RESTARTS})`)
+  if (state.window && !state.window.isDestroyed()) {
+    state.window.loadFile(path.join(assets, 'loading.html')).catch(() => {})
+  }
+  state.restartTimer = setTimeout(() => {
+    state.restartTimer = undefined
+    if (state.quitting || state.child) return
+    launchServer().catch(error => {
+      log(`automatic restart failed: ${error?.stack ?? error}`)
+      offerRestart(code, signal, `自动重启失败:${error?.message ?? error}`)
+    })
+  }, delayMs)
+}
+
+/** Reports an exit the shell could not recover from, with a retry button. */
+function offerRestart(code, signal, detail) {
+  dialog.showMessageBox(state.window, {
+    type: 'error',
+    message: `dsh 服务已退出(${describeExit(code, signal)})`,
+    detail: `${detail}\n日志:${paths.logFile}`,
+    buttons: ['重启服务', '忽略'],
+    defaultId: 0,
+    cancelId: 1,
+  }).then(({ response }) => {
+    if (response === 0) restartServer().catch(e => errorDialog('重启失败', e))
+  })
 }
 
 /** Installs latest into the inactive slot, boot-tests it, then swaps. */
@@ -364,6 +440,8 @@ if (!locked) {
   app.on('before-quit', event => {
     if (state.quitting) return
     state.quitting = true
+    clearTimeout(state.restartTimer)
+    state.restartTimer = undefined
     if (state.child) {
       event.preventDefault()
       log('stopping dsh server')
