@@ -183,9 +183,3 @@ A packaged build redistributes the following, each under its own license, with n
 ### Trademarks
 
 "DeepSeek" is a trademark of its owner. **This project is unofficial, unaffiliated and unendorsed.** The packaged application carries the DeepSeek Harness name and whale icon to identify the upstream software it hosts; those marks belong to their owner and are not covered by this project's MIT grant.
-
-## Upgrading from `dsh-shell`
-
-This project was formerly named `dsh-shell`, as was its data directory. The first launch of a newer build renames `dsh-shell` to `dsh-desktop`, preserving the installed runtime, sessions and settings. If both directories exist, neither is merged nor overwritten: the new one is used and the old location is noted in the log. If the rename fails, the old directory keeps being used rather than starting empty beside it.
-
-The `appId` changed with the rename, so macOS treats it as a different application: **any system permissions granted before (such as Accessibility) must be granted again.**
