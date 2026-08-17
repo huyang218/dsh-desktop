@@ -49,14 +49,27 @@ writeFileSync(path.join(stage, 'VERSION'), `${version}\n`)
 
 // A packaged app redistributes this Node binary (MIT) and npm (Artistic-2.0),
 // and both licenses require their notice to travel with the copy. npm's tree
-// carries its own; Node's LICENSE sits at the install root, so it has to be
-// picked up explicitly or the shipped app has no notice for it at all.
-const nodeLicense = path.join(nodeInstallRoot, 'LICENSE')
-if (existsSync(nodeLicense)) {
+// carries its own; Node's has to be picked up explicitly.
+//
+// Not every installation has one to copy: the Windows MSI installs no LICENSE
+// beside node.exe, while the tarball and zip distributions keep it at the
+// root. A missing notice is a real gap for anyone redistributing the build —
+// but it is the packager's call to make, not a reason to refuse to build, so
+// this warns as loudly as it can and continues.
+const nodeLicense = ['LICENSE', 'LICENSE.md', 'LICENSE.txt']
+  .map(name => path.join(nodeInstallRoot, name))
+  .find(candidate => existsSync(candidate))
+if (nodeLicense) {
   cpSync(nodeLicense, path.join(stage, 'LICENSE-node'), { dereference: true })
 } else {
-  console.error(`WARNING: no Node LICENSE found at ${nodeLicense}; the packaged app would ship without it`)
-  process.exitCode = 1
+  console.error(`
+!! No Node LICENSE found under ${nodeInstallRoot}.
+!! This Node installation (typically the Windows MSI) ships without one, so
+!! the packaged app will carry no notice for the Node binary it redistributes.
+!! To include it, save
+!!   https://raw.githubusercontent.com/nodejs/node/${version}/LICENSE
+!! as ${path.join(nodeInstallRoot, 'LICENSE')} and run this again.
+`)
 }
 
 const outTar = path.join(projectRoot, 'node-runtime.tgz')
