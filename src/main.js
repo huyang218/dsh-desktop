@@ -21,6 +21,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
 import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
+import { resolveLocations, saveLocations } from './locations.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
@@ -31,42 +32,8 @@ import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
 
-const DATA_DIR = 'dsh-desktop'
-/** Data directory name used before the project was renamed. */
-const LEGACY_DATA_DIR = 'dsh-shell'
-
-/**
- * Resolves the data directory, moving the pre-rename one across on first run.
- *
- * The directory holds the installed dsh runtime, sessions, and settings — a
- * rename that leaves them behind silently resets the user to a fresh install,
- * so every failure here prefers the OLD directory over starting empty beside
- * it. Runs before the single-instance lock, which is keyed on this path.
- *
- * @returns {{ dir: string, migrated?: string, note?: string }}
- */
-function resolveUserData() {
-  const appData = app.getPath('appData')
-  const target = path.join(appData, DATA_DIR)
-  const legacy = path.join(appData, LEGACY_DATA_DIR)
-  if (!existsSync(legacy)) return { dir: target }
-  if (existsSync(target)) {
-    // Both present: a half-finished move, or a restored backup. Neither is
-    // ours to merge, so take the current name and say so in the log.
-    return { dir: target, note: `legacy data directory left in place at ${legacy}` }
-  }
-  try {
-    renameSync(legacy, target)
-    return { dir: target, migrated: legacy }
-  } catch (error) {
-    // A cross-volume or permission failure must not cost the user their
-    // runtime and sessions: keep using the directory that actually has them.
-    return { dir: legacy, note: `could not migrate ${legacy}: ${error?.message ?? error}` }
-  }
-}
-
-const dataLocation = resolveUserData()
-app.setPath('userData', dataLocation.dir)
+const locations = resolveLocations(app.getPath('appData'))
+app.setPath('userData', locations.dataDir)
 
 /**
  * @type {{
@@ -102,7 +69,8 @@ function initPaths() {
   paths.dshHome = path.join(userData, 'dsh-home')
   // A migrated directory keeps its old dsh-shell.log beside this one; that
   // history is the user's, so it is left alone rather than renamed or removed.
-  paths.logFile = path.join(userData, 'dsh-desktop.log')
+  paths.logDir = locations.logDir
+  paths.logFile = path.join(locations.logDir, 'dsh-desktop.log')
   paths.settingsFile = path.join(userData, 'settings.json')
   mkdirSync(paths.dshHome, { recursive: true })
 }
@@ -154,6 +122,62 @@ function applyLocale(id) {
     state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
       .catch(() => {})
   }
+}
+
+/**
+ * Asks for a directory and records it as the new data location.
+ *
+ * The data is NOT moved. Relocating gigabytes across volumes from a modal
+ * with no progress is exactly where a half-copied runtime and a lost session
+ * history come from; the user is told plainly what stays behind and can move
+ * it deliberately. A restart is required because Chromium holds handles
+ * inside the current userData for the life of the process.
+ */
+async function chooseDataDir() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickDataDir'),
+    defaultPath: locations.dataDir,
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  const chosen = filePaths?.[0]
+  if (canceled || !chosen || chosen === locations.dataDir) return
+  saveLocations(locations.pointerFile, { dataDir: chosen === locations.defaultDir ? null : chosen })
+  log(`data directory set to ${chosen}`)
+  const { response } = await dialog.showMessageBox(state.window, {
+    type: 'warning',
+    message: t('dialog.dataDirChanged', { dir: chosen }),
+    detail: t('dialog.dataDirDetail', { current: locations.dataDir }),
+    buttons: [t('button.restartApp'), t('button.restartLater')],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (response === 0) {
+    // Deliberately NOT setting state.quitting here: before-quit uses it to
+    // tell "already shutting down" from a fresh request, and short-circuiting
+    // it would skip stopping the server — leaving an orphaned dsh behind for
+    // the relaunched app to collide with.
+    app.relaunch()
+    app.quit()
+  }
+}
+
+/** The log can move without a restart: every line reopens the file anyway. */
+async function chooseLogDir() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickLogDir'),
+    defaultPath: paths.logDir,
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  const chosen = filePaths?.[0]
+  if (canceled || !chosen || chosen === paths.logDir) return
+  saveLocations(locations.pointerFile, { logDir: chosen === locations.dataDir ? null : chosen })
+  paths.logDir = chosen
+  paths.logFile = path.join(chosen, 'dsh-desktop.log')
+  log(`log directory set to ${chosen}`)
+  await dialog.showMessageBox(state.window, {
+    message: t('dialog.logDirChanged', { dir: chosen }),
+    detail: t('dialog.logDirDetail'),
+  })
 }
 
 function log(line) {
@@ -543,7 +567,15 @@ function languageItems() {
 function actionItems() {
   return [
     { label: t('menu.plugins'), click: openPluginManager },
-    { label: t('menu.settings'), submenu: [{ label: t('menu.language'), submenu: languageItems() }] },
+    {
+      label: t('menu.settings'),
+      submenu: [
+        { label: t('menu.language'), submenu: languageItems() },
+        { type: 'separator' },
+        { label: t('menu.dataDir'), click: () => chooseDataDir().catch(e => errorDialog(t('dialog.settingFailed'), e)) },
+        { label: t('menu.logDir'), click: () => chooseLogDir().catch(e => errorDialog(t('dialog.settingFailed'), e)) },
+      ],
+    },
     { type: 'separator' },
     state.update
       ? { label: t('menu.updating'), enabled: false }
@@ -676,8 +708,10 @@ async function main() {
   setLocale(readSettings().locale ?? resolveLocale(app.getLocale()))
   log('dsh Desktop starting')
   log(`locale: ${getLocale()}`)
-  if (dataLocation.migrated) log(`migrated data directory from ${dataLocation.migrated}`)
-  if (dataLocation.note) log(dataLocation.note)
+  if (locations.migrated) log(`migrated data directory from ${locations.migrated}`)
+  for (const note of locations.notes) log(note)
+  log(`data directory: ${locations.dataDir}`)
+  if (locations.logDir !== locations.dataDir) log(`log directory: ${locations.logDir}`)
   registerPluginIpc()
   const window = new BrowserWindow({
     width: 1280,
