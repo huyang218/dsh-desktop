@@ -24,7 +24,7 @@ import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
-  installIntoSlot, readPointer, slotDir,
+  installIntoSlot, latestVersion, readPointer, slotDir,
 } from './runtime.js'
 import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 
@@ -314,36 +314,77 @@ function offerRestart(code, signal, detail) {
   })
 }
 
-/** Installs latest into the inactive slot, boot-tests it, then swaps. */
+/**
+ * Checks for a newer dsh, and installs it only if the user agrees.
+ *
+ * The check is a registry lookup, not an install: this used to download the
+ * newest version into the idle slot before it could tell you that you already
+ * had it — minutes of waiting, and no say in whether to fetch it at all. The
+ * install that follows pins the exact version shown, so a release landing
+ * mid-flow cannot substitute itself for the one that was agreed to.
+ */
 async function updateRuntime() {
-  const pointer = await readPointer(paths.runtimeBase)
-  const target = inactiveSlot(pointer?.slot)
-  const dir = slotDir(paths.runtimeBase, target)
-  log(`updating ${DSH_PACKAGE} into ${target} …`)
-  const version = await installIntoSlot({ toolchain: state.toolchain, dir, log })
-  if (pointer?.version === version) {
-    dialog.showMessageBox(state.window, { message: t('dialog.upToDate', { version }) })
+  if (state.updating) {
+    await dialog.showMessageBox(state.window, { message: t('dialog.updateBusy') })
     return
   }
-  // Boot test in the new slot before committing to it.
-  const testPort = await getFreePort()
-  const probe = await startServer({
-    slotDir: dir, port: testPort, dshHome: paths.dshHome,
-    cwd: homedir(), toolchain: state.toolchain, log,
-  })
-  const ok = await waitHealthy(testPort, { timeoutMs: 90_000 })
-  await stopServer(probe)
-  if (!ok) throw new Error(`${t('error.selfTestFailed', { version })}${t('dialog.logPath', { path: paths.logFile })}`)
-  await activateSlot(paths.runtimeBase, { slot: target, version })
-  state.runtime = { slot: target, dir, version }
-  log(`activated ${version} in ${target}`)
-  const { response } = await dialog.showMessageBox(state.window, {
-    message: t('dialog.updated', { version }),
-    detail: t('dialog.updatedDetail'),
-    buttons: [t('button.restartService'), t('button.later')],
-    cancelId: 1,
-  })
-  if (response === 0) await restartServer()
+  state.updating = true
+  try {
+    const pointer = await readPointer(paths.runtimeBase)
+    const current = pointer?.version ?? state.runtime?.version
+    let latest
+    try {
+      latest = await latestVersion({ toolchain: state.toolchain })
+    } catch (error) {
+      throw new Error(t('error.checkFailed', { message: error?.message ?? error }))
+    }
+    log(`update check: installed ${current}, latest ${latest}`)
+    if (latest === current) {
+      await dialog.showMessageBox(state.window, { message: t('dialog.upToDate', { version: current }) })
+      return
+    }
+
+    const { response: confirm } = await dialog.showMessageBox(state.window, {
+      type: 'question',
+      message: t('dialog.updateAvailable', { latest }),
+      detail: t('dialog.updateAvailableDetail', { current }),
+      buttons: [t('button.update'), t('button.cancel')],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (confirm !== 0) return
+
+    const target = inactiveSlot(pointer?.slot)
+    const dir = slotDir(paths.runtimeBase, target)
+    log(`installing ${DSH_PACKAGE}@${latest} into ${target} …`)
+    const version = await installIntoSlot({
+      toolchain: state.toolchain, dir, spec: `${DSH_PACKAGE}@${latest}`, log,
+    })
+
+    // Boot test in the new slot before committing to it.
+    const testPort = await getFreePort()
+    const probe = await startServer({
+      slotDir: dir, port: testPort, dshHome: paths.dshHome,
+      cwd: homedir(), toolchain: state.toolchain, log,
+    })
+    const ok = await waitHealthy(testPort, { timeoutMs: 120_000 })
+    await stopServer(probe)
+    if (!ok) throw new Error(`${t('error.selfTestFailed', { version })}${t('dialog.logPath', { path: paths.logFile })}`)
+    await activateSlot(paths.runtimeBase, { slot: target, version })
+    state.runtime = { slot: target, dir, version }
+    log(`activated ${version} in ${target}`)
+
+    const { response } = await dialog.showMessageBox(state.window, {
+      message: t('dialog.updated', { version }),
+      detail: t('dialog.updatedDetail'),
+      buttons: [t('button.restartService'), t('button.later')],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (response === 0) await restartServer()
+  } finally {
+    state.updating = false
+  }
 }
 
 // ── Plugin manager ──────────────────────────────────────────────────────────

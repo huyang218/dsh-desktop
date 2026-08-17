@@ -45,6 +45,8 @@ const MESSAGES = {
     'button.quit': '退出',
     'button.restartService': '重启服务',
     'button.ignore': '忽略',
+    'button.update': '更新',
+    'button.cancel': '取消',
     'button.later': '稍后',
 
     // Dialogs
@@ -56,6 +58,9 @@ const MESSAGES = {
     'dialog.restartFailed': '重启失败',
     'dialog.updateFailed': '更新失败',
     'dialog.upToDate': '已是最新版本({version})。',
+    'dialog.updateAvailable': '发现新版本 dsh {latest}',
+    'dialog.updateAvailableDetail': '当前版本 {current}。下载并安装需要几分钟;新版本通过启动自检后才会切换,失败则保留当前版本。',
+    'dialog.updateBusy': '更新已在进行中,请等待完成。',
     'dialog.updated': '已更新到 dsh {version}',
     'dialog.updatedDetail': '重启服务以使用新版本?未完成的对话会被中断。',
     'dialog.logPath': '日志:{path}',
@@ -63,6 +68,7 @@ const MESSAGES = {
     // Errors that reach the user through a dialog
     'error.notReady': '服务在超时时间内未就绪(端口 {port})。',
     'error.selfTestFailed': '新版本 {version} 启动自检失败,保留当前版本。',
+    'error.checkFailed': '无法查询最新版本:{message}',
     'error.pluginBusy': '另一个插件操作正在进行,请稍候',
     'error.pnpmMissing': '未找到 pnpm。dsh 通过 pnpm 管理 profile 插件,请先安装(npm i -g pnpm)再重试。',
     'error.pluginExit': 'dsh plugin 退出码 {code}\n{tail}',
@@ -138,6 +144,8 @@ const MESSAGES = {
     'button.quit': 'Quit',
     'button.restartService': 'Restart Service',
     'button.ignore': 'Ignore',
+    'button.update': 'Update',
+    'button.cancel': 'Cancel',
     'button.later': 'Later',
 
     'dialog.startFailed': 'Startup failed',
@@ -148,12 +156,16 @@ const MESSAGES = {
     'dialog.restartFailed': 'Restart failed',
     'dialog.updateFailed': 'Update failed',
     'dialog.upToDate': 'Already up to date ({version}).',
+    'dialog.updateAvailable': 'dsh {latest} is available',
+    'dialog.updateAvailableDetail': 'You have {current}. Downloading and installing takes a few minutes; the new version is switched to only after it passes a startup self-test, and a failure keeps the current one.',
+    'dialog.updateBusy': 'An update is already running; wait for it to finish.',
     'dialog.updated': 'Updated to dsh {version}',
     'dialog.updatedDetail': 'Restart the server to use the new version? Conversations in progress will be interrupted.',
     'dialog.logPath': 'Log: {path}',
 
     'error.notReady': 'The server did not become ready in time (port {port}).',
     'error.selfTestFailed': 'Version {version} failed its startup self-test; keeping the current version.',
+    'error.checkFailed': 'Could not look up the latest version: {message}',
     'error.pluginBusy': 'Another plugin operation is running; please wait',
     'error.pnpmMissing': 'No pnpm found. dsh manages profile plugins through pnpm — install it (npm i -g pnpm) and try again.',
     'error.pluginExit': 'dsh plugin exited with code {code}\n{tail}',

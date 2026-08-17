@@ -109,6 +109,41 @@ export async function installIntoSlot({ toolchain, dir, spec = `${DSH_PACKAGE}@l
 }
 
 /**
+ * Asks the registry what the newest published version is.
+ *
+ * A metadata query rather than an install: checking for an update should cost
+ * one request, not a full download into a slot. The install that may follow
+ * pins this exact version, so a release landing in between cannot swap what
+ * the user agreed to.
+ *
+ * @param {object} options
+ * @param {{ nodeBin: string, npmCli: string, nodeDir: string }} options.toolchain
+ * @param {string} [options.packageName]
+ * @returns {Promise<string>} the version `@latest` currently resolves to
+ */
+export async function latestVersion({ toolchain, packageName = DSH_PACKAGE }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      toolchain.nodeBin,
+      [toolchain.npmCli, 'view', `${packageName}@latest`, 'version', '--loglevel=error'],
+      { env: childEnv(toolchain), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+    )
+    let out = ''
+    let err = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => { out += chunk })
+    child.stderr.on('data', chunk => { err = (err + chunk).slice(-400) })
+    child.on('error', reject)
+    child.on('exit', code => {
+      const version = out.trim()
+      if (code === 0 && version) return resolve(version)
+      reject(new Error(err.trim() || t('error.npmExit', { code })))
+    })
+  })
+}
+
+/**
  * Ensures an active, usable runtime exists. First run prefers copying the
  * bundled seed (offline, seconds); without a seed it installs from npm.
  * Updates always go through npm regardless of how the first slot was made.
