@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>插件管理</title>
+<title data-i18n="plugins.title"></title>
 <style>
   html, body { height: 100%; margin: 0; }
   body {
@@ -71,31 +71,49 @@
 </style>
 </head>
 <body>
-  <h1>插件管理 <span class="hint">(web profile)</span></h1>
+  <h1><span data-i18n="plugins.heading"></span> <span class="hint">(web profile)</span></h1>
   <div class="row">
-    <input id="spec" placeholder="npm 包名 / github:user/repo#commit / 本地绝对路径" spellcheck="false">
-    <button class="primary" id="install">安装</button>
+    <input id="spec" data-i18n-placeholder="plugins.specPlaceholder" spellcheck="false">
+    <button class="primary" id="install" data-i18n="plugins.install"></button>
   </div>
-  <div class="hint">Web UI 皮肤、面板等也是插件,同样方式安装。git 直装若被 pnpm 拦下,按日志提示在 profile 的 pnpm-workspace.yaml 里放行后重试。</div>
+  <div class="hint" data-i18n="plugins.hint"></div>
   <div id="restart-bar">
-    <span style="flex:1">配置已变更,重启服务后生效(未完成的对话会中断)</span>
-    <button class="primary" id="restart">重启服务</button>
+    <span style="flex:1" data-i18n="plugins.restartNotice"></span>
+    <button class="primary" id="restart" data-i18n="button.restartService"></button>
   </div>
-  <div id="list"><div class="empty">加载中…</div></div>
+  <div id="list"><div class="empty" data-i18n="plugins.loading"></div></div>
   <pre id="log"></pre>
   <div id="modal-mask">
     <div id="modal">
       <h2 id="modal-title"></h2>
       <div id="modal-fields"></div>
       <div class="modal-actions">
-        <button id="modal-cancel">取消</button>
-        <button class="primary" id="modal-save">保存配置</button>
+        <button id="modal-cancel" data-i18n="plugins.cancel"></button>
+        <button class="primary" id="modal-save" data-i18n="plugins.save"></button>
       </div>
     </div>
   </div>
   <script>
     const $ = id => document.getElementById(id)
     let busy = false
+
+    // Strings arrive from the main process at preload time, so the first
+    // painted frame is already in the right language.
+    const { locale, messages } = dshPlugins.i18n
+    const t = (key, params) => {
+      const template = messages[key] ?? key
+      return params
+        ? template.replace(/\{(\w+)\}/g, (whole, name) => (
+          Object.hasOwn(params, name) ? String(params[name]) : whole))
+        : template
+    }
+    document.documentElement.lang = locale
+    for (const node of document.querySelectorAll('[data-i18n]')) {
+      node.textContent = t(node.dataset.i18n)
+    }
+    for (const node of document.querySelectorAll('[data-i18n-placeholder]')) {
+      node.placeholder = t(node.dataset.i18nPlaceholder)
+    }
 
     function appendLog(line) {
       $('log').textContent += line + '\n'
@@ -104,14 +122,14 @@
     dshPlugins.onLog(appendLog)
 
     // Renderer failures must never be silent: surface them in the log pane.
-    window.addEventListener('error', event => appendLog(`✘ 页面错误: ${event.message}`))
+    window.addEventListener('error', event => appendLog(`✘ ${t('plugins.pageError', { message: event.message })}`))
     window.addEventListener('unhandledrejection', event => {
-      appendLog(`✘ 操作失败: ${event.reason?.message ?? event.reason}`)
+      appendLog(`✘ ${t('plugins.actionFailed', { message: event.reason?.message ?? event.reason })}`)
     })
 
     // The config IPC channels live in the Electron main process; running
     // against a shell that predates them means the app needs a real relaunch
-    // (tray → 退出), not just 重启服务.
+    // (tray → Quit), not just a server restart.
     const configSupported = typeof dshPlugins.configSchema === 'function'
 
     function setBusy(value) {
@@ -124,19 +142,21 @@
       const list = $('list')
       list.textContent = ''
       if (plugins.length === 0) {
-        list.innerHTML = '<div class="empty">还没有安装插件</div>'
+        list.innerHTML = `<div class="empty">${t('plugins.empty')}</div>`
         return
       }
       for (const p of plugins) {
         const row = document.createElement('div')
         row.className = 'plugin'
-        const badge = p.active ? '<span class="badge">已启用</span>' : '<span class="badge off">仅依赖</span>'
+        const badge = p.active
+          ? `<span class="badge">${t('plugins.badgeActive')}</span>`
+          : `<span class="badge off">${t('plugins.badgeInactive')}</span>`
         row.innerHTML = `<span class="name"></span>${badge}<span class="meta"></span>`
-          + '<button class="settings">设置</button><button class="danger">卸载</button>'
+          + `<button class="settings">${t('plugins.settings')}</button><button class="danger">${t('plugins.remove')}</button>`
         row.querySelector('.name').textContent = p.name
         row.querySelector('.meta').textContent = `${p.version ?? '?'} · ${p.spec}`
         row.querySelector('.settings').addEventListener('click', () => openConfig(p.name))
-        row.querySelector('.danger').addEventListener('click', () => run(() => dshPlugins.remove(p.name), `卸载 ${p.name}`))
+        row.querySelector('.danger').addEventListener('click', () => run(() => dshPlugins.remove(p.name), t('plugins.removing', { name: p.name })))
         list.appendChild(row)
       }
     }
@@ -147,10 +167,10 @@
       appendLog(`▶ ${label}`)
       try {
         await op()
-        appendLog(`✔ ${label} 完成`)
+        appendLog(`✔ ${t('plugins.done', { label })}`)
         $('restart-bar').style.display = 'flex'
       } catch (error) {
-        appendLog(`✘ ${label} 失败: ${error.message}`)
+        appendLog(`✘ ${t('plugins.failed', { label, message: error.message })}`)
       } finally {
         setBusy(false)
         refresh()
@@ -187,7 +207,7 @@
         input.type = field.type === 'number' ? 'number'
           : (field.role === 'secret' || SECRET_KEY.test(field.key)) ? 'password' : 'text'
         input.value = value === undefined || value === null ? '' : String(value)
-        input.placeholder = field.default === undefined || field.default === '' ? '' : `默认: ${field.default}`
+        input.placeholder = field.default === undefined || field.default === '' ? '' : t('plugins.default', { value: field.default })
         input.spellcheck = false
         return input
       }
@@ -215,7 +235,7 @@
       const fields = $('modal-fields')
       fields.textContent = ''
       modalState = { name, rowId: schema.rowId, entries: [] }
-      $('modal-title').textContent = `${name} 配置`
+      $('modal-title').textContent = t('plugins.configTitle', { name })
       for (const field of schema.fields) {
         const wrap = document.createElement('div')
         wrap.className = 'field'
@@ -245,18 +265,18 @@
     async function openConfig(name) {
       if (busy) return
       if (!configSupported) {
-        appendLog('✘ 当前运行的应用还没有配置通道:请从托盘菜单退出应用后重新打开(仅重启服务不够)')
+        appendLog(`✘ ${t('plugins.noChannel')}`)
         return
       }
       try {
         const schema = await dshPlugins.configSchema(name)
-        if (schema.error) { appendLog(`✘ 读取 ${name} 配置项失败: ${schema.error}`); return }
-        if (!schema.fields.length) { appendLog(`ℹ ${name} 没有可配置项`); return }
-        if (!schema.rowId) { appendLog(`ℹ ${name} 的 bundle patch 未插入与包同名的插件行,无法定位配置目标`); return }
+        if (schema.error) { appendLog(`✘ ${t('plugins.readConfigFailed', { name, message: schema.error })}`); return }
+        if (!schema.fields.length) { appendLog(`ℹ ${t('plugins.noFields', { name })}`); return }
+        if (!schema.rowId) { appendLog(`ℹ ${t('plugins.noRow', { name })}`); return }
         const current = await dshPlugins.configGet(name)
         showConfigModal(name, schema, current)
       } catch (error) {
-        appendLog(`✘ 读取 ${name} 配置项失败: ${error.message}`)
+        appendLog(`✘ ${t('plugins.readConfigFailed', { name, message: error.message })}`)
       }
     }
 
@@ -274,14 +294,14 @@
       }
       const { name, rowId } = modalState
       closeModal()
-      await run(() => dshPlugins.configSet(name, rowId, values), `保存 ${name} 配置`)
+      await run(() => dshPlugins.configSet(name, rowId, values), t('plugins.saveConfig', { name }))
     })
 
     $('install').addEventListener('click', async () => {
       const spec = $('spec').value.trim()
       if (!spec) return
       const before = new Set((await dshPlugins.list()).map(p => p.name))
-      await run(() => dshPlugins.install(spec), `安装 ${spec}`)
+      await run(() => dshPlugins.install(spec), t('plugins.installing', { spec }))
       if (!configSupported) return
       // A newly appeared package with config fields gets its form right away.
       try {
@@ -289,24 +309,24 @@
         if (added.length === 1) {
           const schema = await dshPlugins.configSchema(added[0].name)
           if (!schema.error && schema.fields.length && schema.rowId) {
-            appendLog(`ℹ ${added[0].name} 提供配置项,请填写`)
+            appendLog(`ℹ ${t('plugins.hasConfig', { name: added[0].name })}`)
             showConfigModal(added[0].name, schema, await dshPlugins.configGet(added[0].name))
           }
         }
       } catch (error) {
-        appendLog(`✘ 读取新插件配置项失败: ${error.message}`)
+        appendLog(`✘ ${t('plugins.newConfigFailed', { message: error.message })}`)
       }
     })
     $('spec').addEventListener('keydown', e => { if (e.key === 'Enter') $('install').click() })
     $('restart').addEventListener('click', async () => {
       setBusy(true)
-      appendLog('▶ 重启服务…')
+      appendLog(`▶ ${t('plugins.restarting')}`)
       try {
         await dshPlugins.restart()
-        appendLog('✔ 服务已重启,插件已生效')
+        appendLog(`✔ ${t('plugins.restarted')}`)
         $('restart-bar').style.display = 'none'
       } catch (error) {
-        appendLog(`✘ 重启失败: ${error.message}`)
+        appendLog(`✘ ${t('plugins.restartFailed', { message: error.message })}`)
       } finally {
         setBusy(false)
       }

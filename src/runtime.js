@@ -12,6 +12,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { childEnv } from './toolchain.js'
+import { t } from './i18n.js'
 
 export const DSH_PACKAGE = '@deepseek-ai/dsh'
 const SLOTS = ['slot-a', 'slot-b']
@@ -100,10 +101,10 @@ export async function installIntoSlot({ toolchain, dir, spec = `${DSH_PACKAGE}@l
       stream.on('data', chunk => log?.(chunk.trimEnd()))
     }
     child.on('error', reject)
-    child.on('exit', code => (code === 0 ? resolve() : reject(new Error(`npm install 退出码 ${code}`))))
+    child.on('exit', code => (code === 0 ? resolve() : reject(new Error(t('error.npmExit', { code })))))
   })
   const version = await installedVersion(dir)
-  if (!version) throw new Error('npm install 完成但未找到已安装的 dsh 包')
+  if (!version) throw new Error(t('error.npmNoPackage'))
   return version
 }
 
@@ -132,18 +133,18 @@ export async function ensureRuntime({ baseDir, toolchain, seedTar, log }) {
   const dir = slotDir(baseDir, slot)
   let version
   if (seedTar && existsSync(seedTar)) {
-    log?.(`从应用内置种子部署运行时到 ${dir} …`)
+    log?.(`deploying bundled runtime seed into ${dir} …`)
     await rm(dir, { recursive: true, force: true })
     await mkdir(dir, { recursive: true })
     await new Promise((resolve, reject) => {
       const child = spawn('tar', ['-xf', seedTar, '-C', dir], { stdio: 'ignore', windowsHide: true })
       child.on('error', reject)
-      child.on('exit', code => (code === 0 ? resolve() : reject(new Error(`种子解包退出码 ${code}`))))
+      child.on('exit', code => (code === 0 ? resolve() : reject(new Error(t('error.seedExit', { code })))))
     })
     version = await installedVersion(dir)
-    if (!version) throw new Error('内置运行时种子不完整,无法部署')
+    if (!version) throw new Error(t('error.seedIncomplete'))
   } else {
-    log?.(`首次安装 ${DSH_PACKAGE} 到 ${dir} …`)
+    log?.(`installing ${DSH_PACKAGE} into ${dir} …`)
     version = await installIntoSlot({ toolchain, dir, log })
   }
   await writePointer(baseDir, { slot, version })

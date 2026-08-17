@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
+import { t } from './i18n.js'
 
 const MIN_MAJOR = 22
 
@@ -87,9 +88,7 @@ export function findToolchain() {
       if (existsSync(npmCli)) return { nodeBin, nodeDir: dir, npmCli }
     }
   }
-  throw new Error(
-    `未找到 Node.js >= ${MIN_MAJOR}。请安装 Node.js(https://nodejs.org)后重新启动本应用。`,
-  )
+  throw new Error(t('error.noNode', { major: MIN_MAJOR }))
 }
 
 /**
@@ -113,7 +112,7 @@ export function ensureBundledToolchain({ tarPath, versionFile, destBase, log }) 
   const marker = path.join(dest, 'VERSION')
   const current = existsSync(marker) ? readFileSync(marker, 'utf8').trim() : undefined
   if (current !== wanted) {
-    log?.(`部署内置 Node 运行时 ${wanted} …`)
+    log?.(`deploying bundled Node runtime ${wanted} …`)
     rmSync(dest, { recursive: true, force: true })
     mkdirSync(dest, { recursive: true })
     // `tar` by name, not /usr/bin/tar: Windows 10 1803+ ships bsdtar as

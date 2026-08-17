@@ -21,4 +21,12 @@ contextBridge.exposeInMainWorld('dshPlugins', {
   configSet: (name, rowId, values) => ipcRenderer.invoke('plugins:config-set', name, rowId, values),
   /** Subscribes to streamed command output lines. */
   onLog: callback => ipcRenderer.on('plugins:log', (_event, line) => callback(line)),
+  /**
+   * The active language and its full message table.
+   *
+   * Fetched synchronously at preload time so the page can render its first
+   * frame already translated: an async handshake would paint the markup's
+   * placeholder text first and visibly swap it a moment later.
+   */
+  i18n: ipcRenderer.sendSync('i18n:strings'),
 })

@@ -14,12 +14,13 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
+import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
@@ -102,7 +103,56 @@ function initPaths() {
   // A migrated directory keeps its old dsh-shell.log beside this one; that
   // history is the user's, so it is left alone rather than renamed or removed.
   paths.logFile = path.join(userData, 'dsh-desktop.log')
+  paths.settingsFile = path.join(userData, 'settings.json')
   mkdirSync(paths.dshHome, { recursive: true })
+}
+
+/** Shell preferences. Unreadable or corrupt settings fall back to defaults
+ * rather than blocking startup — nothing in here is worth failing over. */
+function readSettings() {
+  try {
+    return JSON.parse(readFileSync(paths.settingsFile, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeSettings(patch) {
+  const next = { ...readSettings(), ...patch }
+  try {
+    writeFileSync(paths.settingsFile, `${JSON.stringify(next, null, 2)}\n`)
+  } catch (error) {
+    log(`could not save settings: ${error?.message ?? error}`)
+  }
+  return next
+}
+
+/**
+ * Applies a language across everything already on screen. The menus and tray
+ * are rebuilt from scratch because Electron menu items are immutable once
+ * built, and the plugin window reloads to pick up its own strings.
+ *
+ * @param {string} id one of {@link LOCALES}
+ */
+function applyLocale(id) {
+  if (id === getLocale()) return
+  setLocale(id)
+  writeSettings({ locale: getLocale() })
+  log(`locale set to ${getLocale()}`)
+  buildMenu()
+  if (state.tray && !state.tray.isDestroyed()) {
+    state.tray.destroy()
+    state.tray = undefined
+    createTray()
+  }
+  if (state.pluginsWindow && !state.pluginsWindow.isDestroyed()) {
+    state.pluginsWindow.reload()
+  }
+  if (state.window && !state.window.isDestroyed() && !state.port) {
+    // Still on the loading page: reload it so its two strings switch too.
+    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
+      .catch(() => {})
+  }
 }
 
 function log(line) {
@@ -124,8 +174,8 @@ async function fatal(title, error) {
   await dialog.showMessageBox({
     type: 'error',
     message: title,
-    detail: `${error?.message ?? error}\n日志:${paths.logFile}`,
-    buttons: ['退出'],
+    detail: `${error?.message ?? error}\n${t('dialog.logPath', { path: paths.logFile })}`,
+    buttons: [t('button.quit')],
   })
   app.quit()
 }
@@ -141,9 +191,9 @@ async function offerLaunchRetry(error) {
   log(`launch failed: ${error?.stack ?? error}`)
   const { response } = await dialog.showMessageBox({
     type: 'error',
-    message: '启动失败',
-    detail: `${error?.message ?? error}\n\n服务可能只是启动较慢(首次安装或磁盘繁忙时)。`,
-    buttons: ['重试', '退出'],
+    message: t('dialog.startFailed'),
+    detail: `${error?.message ?? error}\n\n${t('dialog.startFailedDetail')}`,
+    buttons: [t('button.retry'), t('button.quit')],
     defaultId: 0,
     cancelId: 1,
   })
@@ -198,7 +248,7 @@ async function launchServer() {
     // Superseded: the child died (the supervisor owns the retry) or we are
     // quitting/restarting. Only a live-but-unresponsive server is our error.
     if (state.quitting || state.child !== child) return
-    throw new Error(`服务在超时时间内未就绪(端口 ${port})。日志:${paths.logFile}`)
+    throw new Error(`${t('error.notReady', { port })}${t('dialog.logPath', { path: paths.logFile })}`)
   }
   if (!window.isDestroyed()) await window.loadURL(`http://127.0.0.1:${port}/`)
   log(`dsh ${runtime.version} serving on ${port} (slot ${runtime.slot})`)
@@ -213,7 +263,7 @@ async function restartServer() {
   state.child = undefined
   if (old) await stopServer(old)
   if (!state.window.isDestroyed()) {
-    await state.window.loadFile(path.join(assets, 'loading.html'))
+    await state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
   }
   await launchServer()
 }
@@ -231,21 +281,21 @@ function superviseExit({ code, signal, uptimeMs }) {
   if (state.restarts >= MAX_AUTO_RESTARTS) {
     state.restarts = 0
     log(`giving up after ${MAX_AUTO_RESTARTS} automatic restarts`)
-    offerRestart(code, signal, `已连续自动重启 ${MAX_AUTO_RESTARTS} 次仍未稳定。`)
+    offerRestart(code, signal, t('dialog.gaveUp', { count: MAX_AUTO_RESTARTS }))
     return
   }
   const attempt = ++state.restarts
   const delayMs = RESTART_BACKOFF_MS[Math.min(attempt, RESTART_BACKOFF_MS.length) - 1]
   log(`auto-restarting in ${delayMs}ms (attempt ${attempt}/${MAX_AUTO_RESTARTS})`)
   if (state.window && !state.window.isDestroyed()) {
-    state.window.loadFile(path.join(assets, 'loading.html')).catch(() => {})
+    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` }).catch(() => {})
   }
   state.restartTimer = setTimeout(() => {
     state.restartTimer = undefined
     if (state.quitting || state.child) return
     launchServer().catch(error => {
       log(`automatic restart failed: ${error?.stack ?? error}`)
-      offerRestart(code, signal, `自动重启失败:${error?.message ?? error}`)
+      offerRestart(code, signal, t('dialog.autoRestartFailed', { message: error?.message ?? error }))
     })
   }, delayMs)
 }
@@ -254,13 +304,13 @@ function superviseExit({ code, signal, uptimeMs }) {
 function offerRestart(code, signal, detail) {
   dialog.showMessageBox(state.window, {
     type: 'error',
-    message: `dsh 服务已退出(${describeExit(code, signal)})`,
-    detail: `${detail}\n日志:${paths.logFile}`,
-    buttons: ['重启服务', '忽略'],
+    message: t('dialog.serverExited', { cause: describeExit(code, signal) }),
+    detail: `${detail}\n${t('dialog.logPath', { path: paths.logFile })}`,
+    buttons: [t('button.restartService'), t('button.ignore')],
     defaultId: 0,
     cancelId: 1,
   }).then(({ response }) => {
-    if (response === 0) restartServer().catch(e => errorDialog('重启失败', e))
+    if (response === 0) restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e))
   })
 }
 
@@ -272,7 +322,7 @@ async function updateRuntime() {
   log(`updating ${DSH_PACKAGE} into ${target} …`)
   const version = await installIntoSlot({ toolchain: state.toolchain, dir, log })
   if (pointer?.version === version) {
-    dialog.showMessageBox(state.window, { message: `已是最新版本(${version})。` })
+    dialog.showMessageBox(state.window, { message: t('dialog.upToDate', { version }) })
     return
   }
   // Boot test in the new slot before committing to it.
@@ -283,14 +333,14 @@ async function updateRuntime() {
   })
   const ok = await waitHealthy(testPort, { timeoutMs: 90_000 })
   await stopServer(probe)
-  if (!ok) throw new Error(`新版本 ${version} 启动自检失败,保留当前版本。日志:${paths.logFile}`)
+  if (!ok) throw new Error(`${t('error.selfTestFailed', { version })}${t('dialog.logPath', { path: paths.logFile })}`)
   await activateSlot(paths.runtimeBase, { slot: target, version })
   state.runtime = { slot: target, dir, version }
   log(`activated ${version} in ${target}`)
   const { response } = await dialog.showMessageBox(state.window, {
-    message: `已更新到 dsh ${version}`,
-    detail: '重启服务以使用新版本?未完成的对话会被中断。',
-    buttons: ['重启服务', '稍后'],
+    message: t('dialog.updated', { version }),
+    detail: t('dialog.updatedDetail'),
+    buttons: [t('button.restartService'), t('button.later')],
     cancelId: 1,
   })
   if (response === 0) await restartServer()
@@ -333,7 +383,7 @@ async function runDshPlugin(args) {
     child.on('error', reject)
     child.on('exit', code => (code === 0
       ? resolve()
-      : reject(new Error(`dsh plugin 退出码 ${code}\n${tail.slice(-400)}`))))
+      : reject(new Error(t('error.pluginExit', { code, tail: tail.slice(-400) })))))
   })
 }
 
@@ -363,7 +413,7 @@ async function listPlugins() {
 
 /** Serializes plugin operations; concurrent requests fail fast. */
 async function withPluginLock(work) {
-  if (state.pluginBusy) throw new Error('另一个插件操作正在进行,请稍候')
+  if (state.pluginBusy) throw new Error(t('error.pluginBusy'))
   state.pluginBusy = true
   try {
     return await work()
@@ -381,7 +431,7 @@ function openPluginManager() {
   const win = new BrowserWindow({
     width: 760,
     height: 640,
-    title: '插件管理',
+    title: t('window.plugins'),
     webPreferences: { preload: path.join(here, 'plugins-preload.cjs') },
   })
   win.loadFile(path.join(assets, 'plugins.html'))
@@ -394,6 +444,11 @@ function pluginProfileDir() {
 }
 
 function registerPluginIpc() {
+  // Synchronous by design: the plugin window's preload needs the strings
+  // before the page renders. The payload is a plain object of short strings.
+  ipcMain.on('i18n:strings', event => {
+    event.returnValue = { locale: getLocale(), messages: messages() }
+  })
   ipcMain.handle('plugins:list', () => listPlugins())
   ipcMain.handle('plugins:install', (_event, spec) => withPluginLock(() => runDshPlugin(['add', String(spec)])))
   ipcMain.handle('plugins:remove', (_event, name) => withPluginLock(() => runDshPlugin(['remove', String(name)])))
@@ -414,25 +469,63 @@ function registerPluginIpc() {
 }
 
 /** Shared between the application menu and the tray context menu. */
+function languageItems() {
+  return LOCALES.map(({ id, label }) => ({
+    // A checkmark in the label rather than `type: 'radio'`: Electron invokes a
+    // radio item's click handler while it synchronises group state as the menu
+    // is shown, so radio items here switched the language merely because the
+    // user opened the menu. Plain items only fire when actually chosen.
+    //
+    // Each language is labelled in its own language, never translated: someone
+    // who landed in one they cannot read has to recognise the way out.
+    label: getLocale() === id ? `\u2713 ${label}` : `\u2007\u2007${label}`,
+    click: () => applyLocale(id),
+  }))
+}
+
 function actionItems() {
   return [
-    { label: '插件管理…', click: openPluginManager },
+    { label: t('menu.plugins'), click: openPluginManager },
+    { label: t('menu.settings'), submenu: [{ label: t('menu.language'), submenu: languageItems() }] },
     { type: 'separator' },
-    { label: '检查更新', click: () => updateRuntime().catch(e => errorDialog('更新失败', e)) },
-    { label: '重启服务', click: () => restartServer().catch(e => errorDialog('重启失败', e)) },
+    { label: t('menu.checkUpdate'), click: () => updateRuntime().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
+    { label: t('menu.restartService'), click: () => restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e)) },
     { type: 'separator' },
-    { label: '打开数据目录', click: () => shell.openPath(app.getPath('userData')) },
-    { label: '打开日志', click: () => shell.openPath(paths.logFile) },
+    { label: t('menu.openDataDir'), click: () => shell.openPath(app.getPath('userData')) },
+    { label: t('menu.openLog'), click: () => shell.openPath(paths.logFile) },
+  ]
+}
+
+/**
+ * The Edit menu, spelled out item by item.
+ *
+ * `role: 'editMenu'` would be shorter, but its submenu labels come from
+ * Electron in the SYSTEM language, which leaves an English "Edit" menu full of
+ * Chinese items the moment the two disagree. Naming each item keeps the whole
+ * menu on the language the user picked; the roles still carry the behaviour
+ * and the platform accelerators.
+ *
+ * It has to exist at all because macOS registers the clipboard shortcuts
+ * through the menu: with no such roles anywhere, ⌘C/⌘V/⌘A do nothing in the
+ * chat UI.
+ */
+function editItems() {
+  return [
+    { role: 'undo', label: t('menu.undo') },
+    { role: 'redo', label: t('menu.redo') },
+    { type: 'separator' },
+    { role: 'cut', label: t('menu.cut') },
+    { role: 'copy', label: t('menu.copy') },
+    { role: 'paste', label: t('menu.paste') },
+    { role: 'selectAll', label: t('menu.selectAll') },
   ]
 }
 
 function buildMenu() {
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
-    { label: 'dsh', submenu: actionItems() },
-    { role: 'editMenu' },
-    { role: 'viewMenu' },
-    { role: 'windowMenu' },
+    { label: t('menu.main'), submenu: actionItems() },
+    { label: t('menu.edit'), submenu: editItems() },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
@@ -446,20 +539,24 @@ function createTray() {
     ? nativeImage.createFromPath(path.join(assets, 'trayTemplate.png'))
     : nativeImage.createFromPath(path.join(assets, 'icon-1024.png')).resize({ width: 16, height: 16 })
   const tray = new Tray(icon)
-  tray.setToolTip(`DeepSeek Harness(dsh ${state.runtime.version})`)
+  tray.setToolTip(t('tray.tooltip', { version: state.runtime.version }))
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: '显示窗口', click: showWindow },
+    { label: t('menu.showWindow'), click: showWindow },
     { type: 'separator' },
     ...actionItems(),
     { type: 'separator' },
-    { label: '退出', click: () => app.quit() },
+    { label: t('menu.quit'), click: () => app.quit() },
   ]))
   state.tray = tray
 }
 
 async function main() {
   initPaths()
+  // A saved choice wins; otherwise follow the system language, so a fresh
+  // install opens in the user's own rather than in a default.
+  setLocale(readSettings().locale ?? resolveLocale(app.getLocale()))
   log('dsh Desktop starting')
+  log(`locale: ${getLocale()}`)
   if (dataLocation.migrated) log(`migrated data directory from ${dataLocation.migrated}`)
   if (dataLocation.note) log(dataLocation.note)
   registerPluginIpc()
@@ -476,7 +573,7 @@ async function main() {
     event.preventDefault()
     window.hide()
   })
-  await window.loadFile(path.join(assets, 'loading.html'))
+  await window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
   try {
     // Packaged builds prefer the app-bundled Node; the system search is the
     // dev-mode path and the fallback for a missing/corrupt bundle.
@@ -502,7 +599,7 @@ async function main() {
   } catch (error) {
     // Environment problems (no usable Node, a runtime that will not deploy)
     // are not something another attempt fixes.
-    await fatal('启动失败', error)
+    await fatal(t('dialog.startFailed'), error)
     return
   }
   // The environment is ready; past this point a failure is about the server

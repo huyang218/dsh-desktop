@@ -17,6 +17,7 @@
 import { spawn } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { t } from './i18n.js'
 
 // These markers are a DATA FORMAT, not branding: they are written into the
 // user's cordis.patch.yml and located again by exact string match. Renaming
@@ -51,7 +52,7 @@ export async function probePluginConfig({ nodeBin, probePath, profileDir, runtim
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-1000) })
     const fail = message => resolve({ rowId: null, fields: [], error: message })
-    const timer = setTimeout(() => { child.kill('SIGKILL'); fail('读取插件配置项超时') }, 15_000)
+    const timer = setTimeout(() => { child.kill('SIGKILL'); fail(t('error.configProbeTimeout')) }, 15_000)
     child.on('error', error => { clearTimeout(timer); fail(String(error.message)) })
     child.on('exit', () => {
       clearTimeout(timer)
@@ -62,7 +63,7 @@ export async function probePluginConfig({ nodeBin, probePath, profileDir, runtim
         resolve(JSON.parse(lines[lines.length - 1]))
       } catch {
         log?.(`config probe for ${name} produced no JSON; stderr: ${stderr}`)
-        fail(`无法读取 ${name} 的配置描述(探针输出异常)`)
+        fail(t('error.configProbeOutput', { name }))
       }
     })
   })

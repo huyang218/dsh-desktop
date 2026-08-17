@@ -21,7 +21,27 @@
 </head>
 <body>
   <div class="spinner"></div>
-  <div>正在启动 DeepSeek Harness…</div>
-  <div class="hint">首次启动会下载并安装 dsh 运行时,可能需要几分钟</div>
+  <div id="starting"></div>
+  <div class="hint" id="hint"></div>
+<script>
+  // This page loads before any IPC channel exists — it is what the window
+  // shows while the main process is still setting one up — so the language
+  // arrives in the query string that loadFile() attaches.
+  const STRINGS = {
+    'zh-CN': {
+      starting: '正在启动 DeepSeek Harness…',
+      hint: '首次启动会下载并安装 dsh 运行时,可能需要几分钟',
+    },
+    en: {
+      starting: 'Starting DeepSeek Harness…',
+      hint: 'The first launch downloads and installs the dsh runtime, which can take a few minutes',
+    },
+  }
+  const lang = new URLSearchParams(location.search).get('lang')
+  const strings = STRINGS[lang] ?? STRINGS.en
+  document.documentElement.lang = STRINGS[lang] ? lang : 'en'
+  document.getElementById('starting').textContent = strings.starting
+  document.getElementById('hint').textContent = strings.hint
+</script>
 </body>
 </html>
