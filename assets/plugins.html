@@ -4,74 +4,188 @@
 <meta charset="utf-8">
 <title data-i18n="plugins.title"></title>
 <style>
+  /* Tokens first, so the two colour schemes differ only in values. The dsh
+     web UI follows the system, and a plugin window nailed to dark would look
+     like a different application docked inside this one. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f8;
+    --surface: #ffffff;
+    --surface-2: #f0f0f3;
+    --sunken: #fafafb;
+    --border: #e0e0e6;
+    --border-strong: #cfcfd8;
+    --text: #1c1c22;
+    --text-muted: #6b6b78;
+    --text-faint: #90909c;
+    --accent: #3b62d9;
+    --accent-text: #ffffff;
+    --accent-soft: #eaf0ff;
+    --ok-bg: #e6f6ec; --ok-text: #1c7a45;
+    --idle-bg: #f3eee4; --idle-text: #8a6a2f;
+    --warn-bg: #fdf6e3; --warn-border: #ecdcb0; --warn-text: #7a5c17;
+    --danger: #c0392b;
+    --shadow: 0 1px 2px rgba(20, 20, 32, 0.06), 0 8px 24px rgba(20, 20, 32, 0.08);
+    --radius: 9px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131317;
+      --surface: #1b1b21;
+      --surface-2: #24242b;
+      --sunken: #101014;
+      --border: #2a2a33;
+      --border-strong: #3a3a45;
+      --text: #e9e9ef;
+      --text-muted: #9a9aa6;
+      --text-faint: #6f6f7b;
+      --accent: #5b7cf0;
+      --accent-text: #ffffff;
+      --accent-soft: #222a44;
+      --ok-bg: #16301f; --ok-text: #74cf95;
+      --idle-bg: #2e2519; --idle-text: #d3a76c;
+      --warn-bg: #2b2418; --warn-border: #4d3d1e; --warn-text: #e6c987;
+      --danger: #e06a5c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.45);
+    }
+  }
+
   html, body { height: 100%; margin: 0; }
   body {
-    display: flex; flex-direction: column; gap: 14px; box-sizing: border-box; padding: 18px;
-    background: #141418; color: #d5d5dc;
-    font: 13px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; gap: 14px;
+    box-sizing: border-box; padding: 18px 20px;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { margin: 0; font-size: 16px; color: #e8e8ee; }
-  .hint { color: #85858f; font-size: 12px; }
+  ::selection { background: var(--accent); color: var(--accent-text); }
+
+  /* Header */
+  header { display: flex; align-items: baseline; gap: 9px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  .chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+  }
+  .hint { color: var(--text-muted); font-size: 12px; }
+
+  /* Install row */
   .row { display: flex; gap: 8px; }
+  input, button, select, textarea { font: inherit; }
   input {
-    flex: 1; padding: 8px 10px; border-radius: 7px; border: 1px solid #33333b;
-    background: #1d1d23; color: #e8e8ee; font: inherit; outline: none;
+    flex: 1; padding: 9px 11px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); background: var(--surface);
+    color: var(--text); outline: none; transition: border-color .12s, box-shadow .12s;
   }
-  input:focus { border-color: #4c6bd8; }
+  input::placeholder { color: var(--text-faint); }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
   button {
-    appearance: none; border: 1px solid #33333b; border-radius: 7px; cursor: pointer;
-    background: #232329; color: #c8c8d0; font: inherit; padding: 8px 14px; white-space: nowrap;
+    appearance: none; cursor: pointer; white-space: nowrap;
+    padding: 9px 15px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    transition: background .12s, border-color .12s, color .12s, transform .06s;
   }
-  button:hover:not(:disabled) { background: #2c2c34; color: #fff; }
-  button:disabled { opacity: 0.45; cursor: default; }
-  button.primary { border-color: #3a4f9e; background: #26304f; color: #b9c8ff; }
-  button.primary:hover:not(:disabled) { background: #2e3a61; }
-  button.danger:hover:not(:disabled) { border-color: #8a3a3a; color: #ffb9b9; }
-  #list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
-  .plugin {
-    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
-    background: #1b1b21; border: 1px solid #26262d; border-radius: 8px;
-  }
-  .plugin .name { font-weight: 600; color: #e2e2e8; }
-  .plugin .meta { color: #85858f; font-size: 12px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .badge { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: #1f3325; color: #7ed09a; }
-  .badge.off { background: #33261f; color: #d0a37e; }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 550; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+  button.small { padding: 6px 11px; font-size: 12px; }
+  button.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--surface); }
+
+  /* Restart notice */
   #restart-bar {
     display: none; align-items: center; gap: 10px; padding: 10px 12px;
-    background: #2b2418; border: 1px solid #4d3d1e; border-radius: 8px; color: #e6c987;
+    background: var(--warn-bg); border: 1px solid var(--warn-border);
+    border-radius: var(--radius); color: var(--warn-text);
   }
+
+  /* Plugin list: name and status on one line, the spec beneath it, actions
+     pinned right across both — a spec can be a long path and should never
+     push the buttons around. */
+  #list { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
+  .plugin {
+    display: grid; align-items: center; gap: 2px 9px;
+    grid-template-columns: max-content max-content 1fr max-content max-content;
+    padding: 10px 12px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    transition: border-color .12s, background .12s;
+  }
+  .plugin:hover { border-color: var(--border-strong); }
+  .plugin .name { grid-area: 1 / 1; font-weight: 600; }
+  .plugin .badge { grid-area: 1 / 2; }
+  .plugin .meta {
+    grid-area: 2 / 1 / auto / 4; color: var(--text-muted); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .plugin .settings { grid-area: 1 / 4 / span 2; }
+  .plugin .danger { grid-area: 1 / 5 / span 2; }
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--ok-bg); color: var(--ok-text); white-space: nowrap;
+  }
+  .badge.off { background: var(--idle-bg); color: var(--idle-text); }
+  .empty { color: var(--text-faint); padding: 28px; text-align: center; }
+
+  /* Log */
   #log {
     margin: 0; padding: 10px 12px; height: 130px; overflow-y: auto; white-space: pre-wrap;
-    background: #101014; border: 1px solid #26262d; border-radius: 8px;
-    color: #9a9aa4; font: 11px/1.5 ui-monospace, Menlo, monospace;
+    background: var(--sunken); border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text-muted); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  .empty { color: #6a6a74; padding: 14px; text-align: center; }
+
+  /* Config modal */
   #modal-mask {
-    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-    align-items: center; justify-content: center; z-index: 10;
+    display: none; position: fixed; inset: 0; z-index: 10;
+    background: rgba(12, 12, 20, .45); backdrop-filter: blur(2px);
+    align-items: center; justify-content: center;
   }
   #modal {
-    width: 520px; max-height: 80vh; overflow-y: auto; box-sizing: border-box;
-    background: #1b1b21; border: 1px solid #33333b; border-radius: 10px; padding: 18px;
-    display: flex; flex-direction: column; gap: 12px;
+    width: 520px; max-width: calc(100vw - 40px); max-height: 80vh; overflow-y: auto;
+    box-sizing: border-box; padding: 20px; display: flex; flex-direction: column; gap: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; box-shadow: var(--shadow);
   }
-  #modal h2 { margin: 0; font-size: 14px; color: #e8e8ee; }
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field label { font-size: 12px; color: #b8b8c2; }
-  .field label .req { color: #d08a7e; }
-  .field .desc { font-size: 11px; color: #787882; }
+  #modal h2 { margin: 0; font-size: 14px; font-weight: 650; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 12px; font-weight: 550; color: var(--text); }
+  .field label .req { color: var(--danger); }
+  .field .desc { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
   .field input[type="text"], .field input[type="password"], .field input[type="number"],
   .field select, .field textarea {
-    padding: 7px 9px; border-radius: 6px; border: 1px solid #33333b;
-    background: #16161b; color: #e8e8ee; font: inherit; outline: none;
+    padding: 8px 10px; border-radius: 7px; border: 1px solid var(--border-strong);
+    background: var(--surface); color: var(--text); outline: none;
+    transition: border-color .12s, box-shadow .12s;
   }
-  .field textarea { font-family: ui-monospace, Menlo, monospace; min-height: 60px; }
-  .field input:focus, .field select:focus, .field textarea:focus { border-color: #4c6bd8; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .field textarea { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; min-height: 62px; resize: vertical; }
+  .field input:focus, .field select:focus, .field textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .field input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
+
+  /* Scrollbars: the default light ones are invisible on the sunken panels. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong); border-radius: 999px;
+    border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: content-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
 </style>
 </head>
 <body>
-  <h1><span data-i18n="plugins.heading"></span> <span class="hint">(web profile)</span></h1>
+  <header>
+    <h1 data-i18n="plugins.heading"></h1>
+    <span class="chip">web profile</span>
+  </header>
   <div class="row">
     <input id="spec" data-i18n-placeholder="plugins.specPlaceholder" spellcheck="false">
     <button class="primary" id="install" data-i18n="plugins.install"></button>
@@ -79,7 +193,7 @@
   <div class="hint" data-i18n="plugins.hint"></div>
   <div id="restart-bar">
     <span style="flex:1" data-i18n="plugins.restartNotice"></span>
-    <button class="primary" id="restart" data-i18n="button.restartService"></button>
+    <button class="primary small" id="restart" data-i18n="button.restartService"></button>
   </div>
   <div id="list"><div class="empty" data-i18n="plugins.loading"></div></div>
   <pre id="log"></pre>
@@ -152,7 +266,7 @@
           ? `<span class="badge">${t('plugins.badgeActive')}</span>`
           : `<span class="badge off">${t('plugins.badgeInactive')}</span>`
         row.innerHTML = `<span class="name"></span>${badge}<span class="meta"></span>`
-          + `<button class="settings">${t('plugins.settings')}</button><button class="danger">${t('plugins.remove')}</button>`
+          + `<button class="settings small">${t('plugins.settings')}</button><button class="danger small">${t('plugins.remove')}</button>`
         row.querySelector('.name').textContent = p.name
         row.querySelector('.meta').textContent = `${p.version ?? '?'} · ${p.spec}`
         row.querySelector('.settings').addEventListener('click', () => openConfig(p.name))
