@@ -404,7 +404,7 @@ function createTray() {
   // light/dark menu bars; the @2x variant beside it serves Retina displays.
   const icon = nativeImage.createFromPath(path.join(assets, 'trayTemplate.png'))
   const tray = new Tray(icon)
-  tray.setToolTip(`dsh Desktop(dsh ${state.runtime.version})`)
+  tray.setToolTip(`DeepSeek Harness(dsh ${state.runtime.version})`)
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示窗口', click: showWindow },
     { type: 'separator' },
@@ -424,7 +424,7 @@ async function main() {
   const window = new BrowserWindow({
     width: 1280,
     height: 840,
-    title: 'dsh Desktop',
+    title: 'DeepSeek Harness',
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   })
   state.window = window

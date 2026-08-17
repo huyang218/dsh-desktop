@@ -8,6 +8,8 @@
 
 **非官方项目**,与 DeepSeek 无隶属关系。dsh 本体由官方以 npm 包形式发布,本项目只是它的桌面外壳:壳不打包 dsh,dsh 通过 npm 独立安装与更新,两者的迭代完全解耦。
 
+> 仓库名为 `dsh-desktop`,打包出的应用显示为 **DeepSeek Harness**(见文末[许可](#许可)一节的商标说明)。
+
 ## 它解决什么
 
 直接用 `npx dsh web` 也能跑,但你要自己管:装到哪、怎么升级、端口被占了怎么办、退出时子进程有没有留下、`DSH_HOME` 放哪、崩了谁把它拉起来。这个壳把这些收进一个应用里。
@@ -65,7 +67,7 @@ npm run dist:dmg  # dmg 安装包
 | [npm](https://github.com/npm/cli) | Artistic-2.0 | 同上 → `lib/node_modules/npm/LICENSE` |
 | [Electron](https://www.electronjs.org) | MIT | 应用框架 |
 
-"DeepSeek" 是深度求索的商标。本项目为非官方项目、与其无隶属关系;名称与图标均为本项目自有,不使用上游标识。图标由 `npm run icons` 从 `scripts/make-icons.swift` 生成。
+"DeepSeek" 是深度求索的商标。**本项目为非官方项目,与深度求索无隶属关系,也未获其背书。** 打包出的应用沿用 "DeepSeek Harness" 名称与鲸鱼图标以指明它承载的上游软件;这些标识的权利属于其所有者,不在本项目的 MIT 许可范围内。
 
 ## 从旧版本升级
 

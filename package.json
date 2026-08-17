@@ -18,7 +18,6 @@
   },
   "scripts": {
     "start": "electron .",
-    "icons": "swift scripts/make-icons.swift assets",
     "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
     "predist": "npm run seed",
     "dist": "electron-builder --mac dir",
@@ -31,7 +30,7 @@
   },
   "build": {
     "appId": "io.github.huyang218.dsh-desktop",
-    "productName": "dsh Desktop",
+    "productName": "DeepSeek Harness",
     "directories": {
       "output": "dist"
     },
