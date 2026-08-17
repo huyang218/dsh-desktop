@@ -51,8 +51,51 @@ npm run dist:dmg  # dmg 安装包
 - dsh 处于 rc 阶段,壳依赖的契约刻意最小化:`dsh web --port N` + 根路径 200 即就绪。dsh 侧发生破坏性变更时优先检查这两点。
 - 本地端口对本机进程可见(dsh 目前无鉴权 token);随机端口是缓解,不是根治。
 - 对话依赖 `DEEPSEEK_API_KEY`;可在 dsh Web UI 的设置里配置,或于启动前导出该环境变量。
-- 仅在 macOS(Apple Silicon)上验证过。打包配置目前只有 mac 目标。
+- 仅在 macOS(Apple Silicon)上验证过。打包配置目前只有 mac 目标,Windows 见下节。
 - 应用为 ad-hoc 签名、未公证:首次打开需在"系统设置 → 隐私与安全性"里放行。
+
+## Windows 支持(尚未实现)
+
+上游 dsh **本身支持 Windows**(`@deepseek-ai/dsh` 无 `os` 限制,运行时自带
+`dsh-pwsh-local`、`dsh-tool-pwsh`、`dsh-sandbox-windows-acl`)。障碍全在本壳:
+整个代码库只有一处 `process.platform` 分支(`src/main.js` 的 macOS 应用菜单),
+其余默认 POSIX。
+
+### 现在在 Windows 上会怎样
+
+`npm run dist` 会在 **predist 阶段就停住**,拿不到任何产物:
+
+1. `scripts/prepare-seed.mjs` 的运行时路径写死为 `~/Library/Application Support/…`,
+   在 Windows 上不存在 → 报 "No active local dsh runtime" 并 `exit 1`。
+2. 即便跳过它,`scripts/prepare-node.mjs` 里 `findToolchain()` 找的是 `node`
+   而非 `node.exe`,在 Windows 上找不到 Node。
+3. 两个脚本都调 `/usr/bin/tar`(Win10 1803+ 的 `tar.exe` 在 System32,
+   按名字调用即可,不能用绝对路径)。
+
+绕过 `predist` 直接跑 `npx electron-builder --win dir` **能**打出一个 exe,
+但那是拿 macOS 的 `seed.tar` 和 macOS 的 node 二进制打出来的包,装上去必然跑不起来。
+`scripts/adhoc-sign.cjs` 已有平台守卫,不是障碍。
+
+### 移植清单
+
+| 位置 | 问题 | 需要的改动 |
+|---|---|---|
+| `src/server.js`(`detached` / `process.kill(-pid)`) | 负 PID 杀进程组是 POSIX 语义 | Windows 用 `taskkill /PID <pid> /T /F` 或 Job Object,否则退出后 dsh 及其子进程全成孤儿 |
+| `src/runtime.js`、`src/toolchain.js` | `spawn('/usr/bin/tar', …)` | 改为按名字调用 `tar` |
+| `src/toolchain.js` | 只找 `node`,只搜 homebrew / `/usr/local/bin` / `~/.nvm` | 加 `node.exe`、`%ProgramFiles%\nodejs`、nvm-windows |
+| `scripts/prepare-node.mjs` | 复制 `bin/node` + `lib/node_modules/npm` | Windows 是根目录 `node.exe` + `node_modules\npm` |
+| `scripts/prepare-seed.mjs` | 写死 macOS 数据目录 | 按平台取 `%APPDATA%` |
+| `package.json` `build` | 只有 `mac` 目标 | 加 `win`(nsis/portable)与 `.ico` 图标 |
+| `assets/trayTemplate*.png` | macOS 模板图(黑+alpha,由系统着色) | Windows 托盘需要彩色 `.ico` |
+
+### 打包必须在 Windows 上做
+
+本项目的打包模型是**快照打包机**:`seed.tar` 是本机装好的 dsh 运行时,
+`node-runtime.tgz` 是本机的 Node 二进制。因此 Windows 包只能在 Windows 上打,
+不能交叉打包——除非改成按目标平台下载官方 Node、并放弃离线种子(首启动联网装 dsh)。
+
+**最需要真机验证的是进程组终止**:它属于"看起来能跑、实际留孤儿进程"那类问题,
+只有在 Windows 上真正走一遍"退出应用 → 检查 dsh 及其子进程是否全部消失"才算数。
 
 ## 许可
 
