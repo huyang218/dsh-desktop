@@ -40,14 +40,25 @@ npm start
 
 ### 如果 `npm install` 卡在下载 Electron
 
-electron 包的 postinstall 会从 GitHub Releases 拉取约 100MB 的运行时,**这一步不走 npm registry**——只改 registry 不解决问题。当网络无法访问 GitHub 或被重置时(表现为 `node_modules/electron` 下的 `RequestError: read ECONNRESET`),把两个下载器都指向镜像:
+electron 包的 postinstall 会从 GitHub Releases 拉取约 100MB 的运行时,**这一步不走 npm registry**——只改 registry 不解决问题。当网络无法访问 GitHub 或被重置时(表现为 `node_modules/electron` 下的 `RequestError: read ECONNRESET`),把两个下载器都指向镜像。
 
-```sh
-npm config set electron_mirror https://npmmirror.com/mirrors/electron/
-npm config set electron_builder_binaries_mirror https://npmmirror.com/mirrors/electron-builder-binaries/
+Windows(`cmd`,须与后续命令在同一个窗口):
+
+```cmd
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 ```
 
-第二条在打包阶段才起作用:`electron-builder` 同样会从 GitHub 下载它自己的辅助二进制(NSIS、winCodeSign),不设的话你会在 `npm run dist:win` 时再撞一次同样的失败。
+macOS / Linux:
+
+```sh
+export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+```
+
+要持久生效,把同名键以小写写进 `.npmrc`(`electron_mirror=…`),npm 会把它传给生命周期脚本。注意 `npm config set electron_mirror …` 会被 npm 9 及以上版本**拒绝**——它校验键名,而这些并非 npm 自身的选项。
+
+第二个变量在打包阶段才起作用:`electron-builder` 同样会从 GitHub 下载它自己的辅助二进制(NSIS、winCodeSign),只设第一个的话,你会在 `npm run dist:win` 时撞上同样的失败。
 
 安装失败会留下写了一半的 `node_modules`;Windows 上 npm 清理时报 `EPERM: operation not permitted, rmdir`,意味着有进程正占用这些文件(杀毒软件、编辑器、资源管理器)。关掉占用方,删除 `node_modules`,重新安装。
 

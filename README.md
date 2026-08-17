@@ -41,14 +41,25 @@ The first launch installs `@deepseek-ai/dsh@latest` from npm (needs network, tak
 
 ### If `npm install` fails downloading Electron
 
-Electron's postinstall fetches a ~100 MB runtime from GitHub Releases, which does **not** go through the npm registry — changing the registry alone will not fix it. On a network where GitHub is unreachable or reset (`RequestError: read ECONNRESET` under `node_modules/electron`), point both downloaders at a mirror:
+Electron's postinstall fetches a ~100 MB runtime from GitHub Releases, which does **not** go through the npm registry — changing the registry alone will not fix it. On a network where GitHub is unreachable or reset (`RequestError: read ECONNRESET` under `node_modules/electron`), point both downloaders at a mirror.
 
-```sh
-npm config set electron_mirror https://npmmirror.com/mirrors/electron/
-npm config set electron_builder_binaries_mirror https://npmmirror.com/mirrors/electron-builder-binaries/
+Windows (`cmd`, same window as the commands that follow):
+
+```cmd
+set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
 ```
 
-The second one matters at build time rather than install time: `electron-builder` downloads its own helper binaries (NSIS, winCodeSign) from GitHub too, so without it the same failure reappears during `npm run dist:win`.
+macOS / Linux:
+
+```sh
+export ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/
+```
+
+To persist them, add the same keys to `.npmrc` in lowercase (`electron_mirror=…`), which npm exports to lifecycle scripts. Note that `npm config set electron_mirror …` is **rejected** by npm 9 and newer — it validates key names and these are not npm's own options.
+
+The second variable matters at build time rather than install time: `electron-builder` downloads its own helper binaries (NSIS, winCodeSign) from GitHub too, so setting only the first one walks into the same failure during `npm run dist:win`.
 
 A failed install leaves `node_modules` half-written — and on Windows, `EPERM: operation not permitted, rmdir` during npm's cleanup means a process is holding files open (antivirus, an editor, Explorer). Close whatever holds the directory, delete `node_modules`, and install again.
 
