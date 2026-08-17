@@ -18,8 +18,13 @@ import { fileURLToPath } from 'node:url'
 import { readPointer, slotDir, installedVersion, DSH_PACKAGE } from '../src/runtime.js'
 
 const projectRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-// Mirrors the userData pin in src/main.js; macOS-only, like the dist target.
-const runtimeBase = path.join(homedir(), 'Library', 'Application Support', 'dsh-shell', 'runtime')
+// Mirrors the userData resolution in src/main.js; macOS-only, like the dist
+// target. The pre-rename directory is still read when the app has not been
+// launched since the rename, so packaging works before the migration runs.
+const appSupport = path.join(homedir(), 'Library', 'Application Support')
+const runtimeBase = ['dsh-desktop', 'dsh-shell']
+  .map(dir => path.join(appSupport, dir, 'runtime'))
+  .find(dir => existsSync(dir)) ?? path.join(appSupport, 'dsh-desktop', 'runtime')
 
 const pointer = await readPointer(runtimeBase)
 if (!pointer) {

@@ -1,12 +1,24 @@
 {
-  "name": "dsh-shell",
+  "name": "dsh-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Desktop shell for DeepSeek Harness: installs/updates the dsh runtime, owns the server process and storage, and wraps the Web UI in a window.",
+  "description": "Unofficial desktop app for DeepSeek Harness (dsh): installs and updates the runtime, owns the server process and storage, and wraps the web UI in a window.",
+  "author": "Hu Yang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huyang218/dsh-desktop.git"
+  },
+  "homepage": "https://github.com/huyang218/dsh-desktop",
+  "bugs": "https://github.com/huyang218/dsh-desktop/issues",
   "type": "module",
   "main": "src/main.js",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "electron .",
+    "icons": "swift scripts/make-icons.swift assets",
     "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
     "predist": "npm run seed",
     "dist": "electron-builder --mac dir",
@@ -18,8 +30,8 @@
     "electron-builder": "^26.0.0"
   },
   "build": {
-    "appId": "local.dsh-shell",
-    "productName": "DeepSeek Harness",
+    "appId": "io.github.huyang218.dsh-desktop",
+    "productName": "dsh Desktop",
     "directories": {
       "output": "dist"
     },

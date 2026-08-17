@@ -18,6 +18,11 @@ import { spawn } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+// These markers are a DATA FORMAT, not branding: they are written into the
+// user's cordis.patch.yml and located again by exact string match. Renaming
+// them would leave every existing managed block unfindable, so the manager
+// would append a second one while the stale block kept applying. They keep
+// the project's former name for that reason.
 const MARK_BEGIN = '# >>> dsh-shell:plugin-config (由插件管理器维护,请勿在标记内手动编辑)'
 const MARK_END = '# <<< dsh-shell:plugin-config'
 const STORE_FILE = 'plugin-config.json'

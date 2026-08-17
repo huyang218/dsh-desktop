@@ -38,6 +38,18 @@ cpSync(toolchain.nodeBin, path.join(stage, 'bin', 'node'), { dereference: true }
 cpSync(npmDir, path.join(stage, 'lib', 'node_modules', 'npm'), { recursive: true, dereference: true })
 writeFileSync(path.join(stage, 'VERSION'), `${version}\n`)
 
+// A packaged app redistributes this Node binary (MIT) and npm (Artistic-2.0),
+// and both licenses require their notice to travel with the copy. npm's tree
+// carries its own; Node's LICENSE sits beside the install root, so it has to
+// be picked up explicitly or the shipped app has no notice for it at all.
+const nodeLicense = path.join(toolchain.nodeDir, '..', 'LICENSE')
+if (existsSync(nodeLicense)) {
+  cpSync(nodeLicense, path.join(stage, 'LICENSE-node'), { dereference: true })
+} else {
+  console.error(`WARNING: no Node LICENSE found at ${nodeLicense}; the packaged app would ship without it`)
+  process.exitCode = 1
+}
+
 const outTar = path.join(projectRoot, 'node-runtime.tgz')
 rmSync(outTar, { force: true })
 execFileSync('/usr/bin/tar', ['-czf', outTar, '-C', stage, '.'])

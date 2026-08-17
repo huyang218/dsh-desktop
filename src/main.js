@@ -1,5 +1,5 @@
 /**
- * dsh-shell Electron main process.
+ * dsh Desktop Electron main process.
  *
  * Owns the three responsibilities the shell exists for:
  *  - environment: first-run install and dual-slot update of the dsh runtime;
@@ -14,7 +14,7 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -30,11 +30,42 @@ import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
 
-// The user-visible product name is "DeepSeek Harness", but the data
-// directory stays pinned to the original name so renames never orphan the
-// installed runtime, sessions, and settings. Must run before the
-// single-instance lock, which is keyed on this path.
-app.setPath('userData', path.join(app.getPath('appData'), 'dsh-shell'))
+const DATA_DIR = 'dsh-desktop'
+/** Data directory name used before the project was renamed. */
+const LEGACY_DATA_DIR = 'dsh-shell'
+
+/**
+ * Resolves the data directory, moving the pre-rename one across on first run.
+ *
+ * The directory holds the installed dsh runtime, sessions, and settings — a
+ * rename that leaves them behind silently resets the user to a fresh install,
+ * so every failure here prefers the OLD directory over starting empty beside
+ * it. Runs before the single-instance lock, which is keyed on this path.
+ *
+ * @returns {{ dir: string, migrated?: string, note?: string }}
+ */
+function resolveUserData() {
+  const appData = app.getPath('appData')
+  const target = path.join(appData, DATA_DIR)
+  const legacy = path.join(appData, LEGACY_DATA_DIR)
+  if (!existsSync(legacy)) return { dir: target }
+  if (existsSync(target)) {
+    // Both present: a half-finished move, or a restored backup. Neither is
+    // ours to merge, so take the current name and say so in the log.
+    return { dir: target, note: `legacy data directory left in place at ${legacy}` }
+  }
+  try {
+    renameSync(legacy, target)
+    return { dir: target, migrated: legacy }
+  } catch (error) {
+    // A cross-volume or permission failure must not cost the user their
+    // runtime and sessions: keep using the directory that actually has them.
+    return { dir: legacy, note: `could not migrate ${legacy}: ${error?.message ?? error}` }
+  }
+}
+
+const dataLocation = resolveUserData()
+app.setPath('userData', dataLocation.dir)
 
 /**
  * @type {{
@@ -68,7 +99,9 @@ function initPaths() {
   const userData = app.getPath('userData')
   paths.runtimeBase = path.join(userData, 'runtime')
   paths.dshHome = path.join(userData, 'dsh-home')
-  paths.logFile = path.join(userData, 'dsh-shell.log')
+  // A migrated directory keeps its old dsh-shell.log beside this one; that
+  // history is the user's, so it is left alone rather than renamed or removed.
+  paths.logFile = path.join(userData, 'dsh-desktop.log')
   mkdirSync(paths.dshHome, { recursive: true })
 }
 
@@ -371,7 +404,7 @@ function createTray() {
   // light/dark menu bars; the @2x variant beside it serves Retina displays.
   const icon = nativeImage.createFromPath(path.join(assets, 'trayTemplate.png'))
   const tray = new Tray(icon)
-  tray.setToolTip(`DeepSeek Harness(dsh ${state.runtime.version})`)
+  tray.setToolTip(`dsh Desktop(dsh ${state.runtime.version})`)
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示窗口', click: showWindow },
     { type: 'separator' },
@@ -384,12 +417,14 @@ function createTray() {
 
 async function main() {
   initPaths()
-  log('shell starting')
+  log('dsh Desktop starting')
+  if (dataLocation.migrated) log(`migrated data directory from ${dataLocation.migrated}`)
+  if (dataLocation.note) log(dataLocation.note)
   registerPluginIpc()
   const window = new BrowserWindow({
     width: 1280,
     height: 840,
-    title: 'DeepSeek Harness',
+    title: 'dsh Desktop',
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   })
   state.window = window
