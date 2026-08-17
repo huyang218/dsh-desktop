@@ -39,6 +39,19 @@ npm start
 
 The first launch installs `@deepseek-ai/dsh@latest` from npm (needs network, takes a few minutes). Data and logs live in the [data directory](#data-locations).
 
+### If `npm install` fails downloading Electron
+
+Electron's postinstall fetches a ~100 MB runtime from GitHub Releases, which does **not** go through the npm registry — changing the registry alone will not fix it. On a network where GitHub is unreachable or reset (`RequestError: read ECONNRESET` under `node_modules/electron`), point both downloaders at a mirror:
+
+```sh
+npm config set electron_mirror https://npmmirror.com/mirrors/electron/
+npm config set electron_builder_binaries_mirror https://npmmirror.com/mirrors/electron-builder-binaries/
+```
+
+The second one matters at build time rather than install time: `electron-builder` downloads its own helper binaries (NSIS, winCodeSign) from GitHub too, so without it the same failure reappears during `npm run dist:win`.
+
+A failed install leaves `node_modules` half-written — and on Windows, `EPERM: operation not permitted, rmdir` during npm's cleanup means a process is holding files open (antivirus, an editor, Explorer). Close whatever holds the directory, delete `node_modules`, and install again.
+
 ## Building
 
 Packaging **snapshots the packaging machine**. `npm run seed` — which every `dist` script runs first — writes two archives into the project root:

@@ -38,6 +38,19 @@ npm start
 
 首次启动会从 npm 安装 `@deepseek-ai/dsh@latest`(需要网络,耗时几分钟)。数据与日志见[数据位置](#数据位置)。
 
+### 如果 `npm install` 卡在下载 Electron
+
+electron 包的 postinstall 会从 GitHub Releases 拉取约 100MB 的运行时,**这一步不走 npm registry**——只改 registry 不解决问题。当网络无法访问 GitHub 或被重置时(表现为 `node_modules/electron` 下的 `RequestError: read ECONNRESET`),把两个下载器都指向镜像:
+
+```sh
+npm config set electron_mirror https://npmmirror.com/mirrors/electron/
+npm config set electron_builder_binaries_mirror https://npmmirror.com/mirrors/electron-builder-binaries/
+```
+
+第二条在打包阶段才起作用:`electron-builder` 同样会从 GitHub 下载它自己的辅助二进制(NSIS、winCodeSign),不设的话你会在 `npm run dist:win` 时再撞一次同样的失败。
+
+安装失败会留下写了一半的 `node_modules`;Windows 上 npm 清理时报 `EPERM: operation not permitted, rmdir`,意味着有进程正占用这些文件(杀毒软件、编辑器、资源管理器)。关掉占用方,删除 `node_modules`,重新安装。
+
 ## 打包
 
 打包是**对打包机的快照**。每个 `dist` 脚本都会先执行 `npm run seed`,在项目根目录生成两个归档:
