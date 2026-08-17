@@ -370,6 +370,7 @@ async function runDshPlugin(args) {
         cwd: paths.dshHome,
         env: childEnv(state.toolchain, { DSH_HOME: paths.dshHome }),
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
       },
     )
     let tail = ''
@@ -381,9 +382,14 @@ async function runDshPlugin(args) {
       })
     }
     child.on('error', reject)
-    child.on('exit', code => (code === 0
-      ? resolve()
-      : reject(new Error(t('error.pluginExit', { code, tail: tail.slice(-400) })))))
+    child.on('exit', code => {
+      if (code === 0) return resolve()
+      // dsh forwards to pnpm and exits 127 when it cannot find it. That is the
+      // likeliest failure on a fresh machine, and "exit code 127" tells the
+      // user nothing they can act on.
+      if (code === 127 || /pnpm not found/i.test(tail)) return reject(new Error(t('error.pnpmMissing')))
+      reject(new Error(t('error.pluginExit', { code, tail: tail.slice(-400) })))
+    })
   })
 }
 
@@ -460,6 +466,7 @@ function registerPluginIpc() {
     runtimeDir: state.runtime.dir,
     name: String(name),
     env: childEnv(state.toolchain, { DSH_HOME: paths.dshHome }),
+    locale: getLocale(),
     log: pluginsLog,
   }))
   ipcMain.handle('plugins:config-get', (_event, name) => getPluginConfigValues(pluginProfileDir(), String(name)))

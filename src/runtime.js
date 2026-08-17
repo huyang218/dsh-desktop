@@ -94,7 +94,7 @@ export async function installIntoSlot({ toolchain, dir, spec = `${DSH_PACKAGE}@l
     const child = spawn(
       toolchain.nodeBin,
       [toolchain.npmCli, 'install', spec, '--prefix', dir, '--no-audit', '--no-fund', '--loglevel=error'],
-      { env: childEnv(toolchain), stdio: ['ignore', 'pipe', 'pipe'] },
+      { env: childEnv(toolchain), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     )
     for (const stream of [child.stdout, child.stderr]) {
       stream.setEncoding('utf8')

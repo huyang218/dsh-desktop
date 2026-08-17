@@ -140,7 +140,41 @@ export function ensureBundledToolchain({ tarPath, versionFile, destBase, log }) 
 export function childEnv(toolchain, extra = {}) {
   return {
     ...process.env,
-    PATH: `${toolchain.nodeDir}${path.delimiter}${process.env.PATH ?? ''}`,
+    PATH: [toolchain.nodeDir, process.env.PATH ?? '', ...globalBinDirs()]
+      .filter(Boolean)
+      .join(path.delimiter),
     ...extra,
   }
+}
+
+/**
+ * Where package managers install their global executables.
+ *
+ * `dsh plugin` forwards to pnpm and looks it up on PATH — but a GUI app does
+ * not inherit the user's shell PATH. macOS launchd hands out
+ * `/usr/bin:/bin:/usr/sbin:/sbin`, so a pnpm under ~/.local/bin or Homebrew is
+ * invisible to a double-clicked app while working perfectly from a terminal;
+ * on Windows the npm and pnpm shims live under the user's AppData. These are
+ * appended, never prepended, so nothing here can shadow the user's own PATH.
+ *
+ * @returns {string[]} the candidate directories that exist
+ */
+function globalBinDirs() {
+  const home = homedir()
+  const candidates = process.platform === 'win32'
+    ? [
+      process.env.PNPM_HOME,
+      process.env.APPDATA && path.join(process.env.APPDATA, 'npm'),
+      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'pnpm'),
+      process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'nodejs'),
+    ]
+    : [
+      process.env.PNPM_HOME,
+      path.join(home, '.local', 'bin'),
+      path.join(home, 'Library', 'pnpm'),
+      path.join(home, '.volta', 'bin'),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+    ]
+  return [...new Set(candidates.filter(Boolean))].filter(dir => existsSync(dir))
 }

@@ -13,7 +13,7 @@
  * out of the Electron main process and free of module-cache staleness after
  * reinstalls.
  *
- * argv: <profileDir> <runtimeDir> <packageName>
+ * argv: <profileDir> <runtimeDir> <packageName> [locale]
  * stdout: one JSON object { rowId, fields, error? }; always exits 0 so the
  * shell handles failures from the payload, not the exit code.
  */
@@ -23,13 +23,13 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 async function main() {
-  const [profileDir, runtimeDir, packageName] = process.argv.slice(2)
+  const [profileDir, runtimeDir, packageName, locale] = process.argv.slice(2)
   const pkgDir = path.join(profileDir, 'node_modules', packageName)
   const pkg = JSON.parse(await readFile(path.join(pkgDir, 'package.json'), 'utf8'))
 
   return {
     rowId: await findBundleRowId(runtimeDir, pkgDir, pkg),
-    fields: await extractConfigFields(pkgDir, pkg),
+    fields: await extractConfigFields(pkgDir, pkg, locale),
   }
 }
 
@@ -54,7 +54,7 @@ async function findBundleRowId(runtimeDir, pkgDir, pkg) {
 }
 
 /** Form fields from the exported Schemastery `Config` object schema. */
-async function extractConfigFields(pkgDir, pkg) {
+async function extractConfigFields(pkgDir, pkg, locale) {
   const entry = path.join(pkgDir, pkg.main ?? 'index.js')
   const mod = await import(pathToFileURL(entry).href)
   const schema = mod.Config
@@ -69,7 +69,7 @@ async function extractConfigFields(pkgDir, pkg) {
       default: meta.default,
       required: Boolean(meta.required),
       role: meta.role ?? '',
-      description: localizedDescription(meta.description),
+      description: localizedDescription(meta.description, locale),
     }
     // A union of consts renders as a select.
     if (sub.type === 'union' && Array.isArray(sub.list) && sub.list.every(x => x?.type === 'const')) {
@@ -80,13 +80,21 @@ async function extractConfigFields(pkgDir, pkg) {
   return fields
 }
 
-/** Schemastery descriptions are either strings or locale maps. */
-function localizedDescription(description) {
+/**
+ * Schemastery descriptions are either a string or a map keyed by locale.
+ * Prefer the shell's active language, so a form's help text matches the menu
+ * around it rather than always speaking Chinese.
+ */
+function localizedDescription(description, locale) {
   if (typeof description === 'string') return description
-  if (description && typeof description === 'object') {
-    return description.zh ?? description['zh-CN'] ?? Object.values(description)[0] ?? ''
+  if (!description || typeof description !== 'object') return ''
+  const preferred = String(locale ?? '').toLowerCase().startsWith('zh')
+    ? ['zh-CN', 'zh', 'en']
+    : ['en', 'zh-CN', 'zh']
+  for (const key of preferred) {
+    if (typeof description[key] === 'string') return description[key]
   }
-  return ''
+  return Object.values(description).find(value => typeof value === 'string') ?? ''
 }
 
 main()

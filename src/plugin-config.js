@@ -37,11 +37,11 @@ const STORE_FILE = 'plugin-config.json'
  * spawned by its packaged path.
  * @returns {Promise<{rowId: string|null, fields: Array, error?: string}>}
  */
-export async function probePluginConfig({ nodeBin, probePath, profileDir, runtimeDir, name, env, log }) {
+export async function probePluginConfig({ nodeBin, probePath, profileDir, runtimeDir, name, env, log, locale }) {
   const source = await readFile(probePath, 'utf8')
   return await new Promise(resolve => {
-    const child = spawn(nodeBin, ['--input-type=module', '-', profileDir, runtimeDir, name], {
-      cwd: profileDir, env, stdio: ['pipe', 'pipe', 'pipe'],
+    const child = spawn(nodeBin, ['--input-type=module', '-', profileDir, runtimeDir, name, locale], {
+      cwd: profileDir, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     })
     child.stdin.write(source)
     child.stdin.end()
