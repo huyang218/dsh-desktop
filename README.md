@@ -1,126 +1,167 @@
 # dsh Desktop
 
-把 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)(dsh)装进一个桌面应用:**装环境、管进程、管存储**,并把它的 Web UI 收进窗口。
+English | [简体中文](README.zh-CN.md)
 
-> An unofficial desktop app for DeepSeek Harness — installs and updates the
-> runtime, owns the server process and storage, and wraps the web UI in a
-> window.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#platform-support)
 
-**非官方项目**,与 DeepSeek 无隶属关系。dsh 本体由官方以 npm 包形式发布,本项目只是它的桌面外壳:壳不打包 dsh,dsh 通过 npm 独立安装与更新,两者的迭代完全解耦。
+A desktop app for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`): it installs and updates the runtime, owns the server process and its storage, and puts the web UI in a window.
 
-> 仓库名为 `dsh-desktop`,打包出的应用显示为 **DeepSeek Harness**(见文末[许可](#许可)一节的商标说明)。
+> **Unofficial project.** Not affiliated with or endorsed by DeepSeek. `dsh`
+> itself is published by its authors on npm; this app is only a shell around
+> it. The two ship independently — the app never bundles a copy of `dsh` into
+> its own source tree.
 
-## 它解决什么
+The repository is named `dsh-desktop`; the packaged application is named **DeepSeek Harness** (see [Trademarks](#trademarks)).
 
-直接用 `npx dsh web` 也能跑,但你要自己管:装到哪、怎么升级、端口被占了怎么办、退出时子进程有没有留下、`DSH_HOME` 放哪、崩了谁把它拉起来。这个壳把这些收进一个应用里。
+## Why
 
-- **环境(双槽位更新)**:dsh 由 npm 安装到数据目录的 `runtime/slot-a|slot-b`,`current.json` 指向活跃槽。更新时装进闲置槽 → 起一个探针服务做启动自检 → 通过才切换指针;自检失败保留旧版可用,不存在"升级到一半用不了"的状态。
-- **进程**:启动窗口的同时 spawn `dsh web --port <随机空闲端口>`,轮询 HTTP 200 就绪后加载。子进程以独立进程组运行,退出应用时对整组发 SIGTERM(超时升级 SIGKILL),不留孤儿。
-- **进程守护**:服务意外退出(含 OOM 导致的 SIGABRT)会自动重启,退避 1s/3s/8s,连续 3 次失败才弹窗询问。稳定运行满 60 秒重置重启预算,偶发崩溃永远有完整的三次机会。
-- **存储**:`DSH_HOME` 指向数据目录下的 `dsh-home`,profiles、会话、设置全部收归应用管理,菜单可直接打开数据目录与日志。
-- **工具链**:打包版内置 Node 运行时,目标机器无需自行安装 Node;开发模式回退到查找本机 Node ≥ 22(PATH、nvm、Homebrew),npm 以 `node npm-cli.js` 方式调用,绕开 macOS GUI 应用不继承 shell PATH 的问题。
-- **插件管理**:内置 dsh 插件的安装/卸载界面,并能读取插件的配置描述、以表单方式填写,写回 profile 的 `cordis.patch.yml`。
+`npx dsh web` already works. What it leaves to you is everything around it: where the runtime lives, how it gets upgraded, which port to use when one is taken, whether child processes survive the app, where `DSH_HOME` points, and who restarts the server when it dies. This app owns all of that.
 
-## 运行
+## What it does
+
+| | |
+|---|---|
+| **Dual-slot updates** | The runtime is installed by npm into `runtime/slot-a` or `slot-b`, with `current.json` naming the active one. An update installs into the idle slot, boots a probe server against it, and only moves the pointer once that self-test passes — a failed upgrade leaves the working version untouched. |
+| **Process ownership** | The server starts with the window on a random free port and loads once it answers HTTP 200. It runs in its own process group (POSIX) or job tree (Windows), and the whole tree is terminated when the app quits — no orphans. |
+| **Supervision** | An unplanned exit — including an OOM abort, which arrives as a signal rather than an exit code — is restarted automatically, backing off 1s/3s/8s. Three consecutive failures raise a dialog instead of spinning. A server that stays up for a minute earns a fresh budget, so an occasional crash always gets the full three attempts. |
+| **Recoverable start** | A server that misses the readiness deadline offers a retry rather than killing the app: on a busy disk it is usually just slow, not broken. |
+| **Storage** | `DSH_HOME` points inside the app's data directory, so profiles, sessions and settings are all owned by the app. The menu opens the data directory and the log directly. |
+| **Bundled toolchain** | Packaged builds carry their own Node runtime, so a target machine needs nothing preinstalled. Running from source falls back to finding Node ≥ 22 on the machine (PATH, nvm, Homebrew, `%ProgramFiles%`), which also sidesteps GUI apps not inheriting a shell `PATH`. |
+| **Plugin manager** | Install and remove `dsh` plugins from a window. A plugin that exports a config schema gets a generated form; values are written to the profile's `plugin-config.json` and mirrored into a marked block in `cordis.patch.yml`. |
+
+## Running from source
 
 ```sh
 npm install
 npm start
 ```
 
-开发模式首次启动会自动安装 `@deepseek-ai/dsh@latest`(需要网络,几分钟)。数据与日志在 `~/Library/Application Support/dsh-desktop/`。
+The first launch installs `@deepseek-ai/dsh@latest` from npm (needs network, takes a few minutes). Data and logs live in the [data directory](#data-locations).
 
-## 打包
+## Building
 
-```sh
-npm run dist      # .app 目录
-npm run dist:dmg  # dmg 安装包
-```
+Packaging **snapshots the packaging machine**. `npm run seed` — which every `dist` script runs first — writes two archives into the project root:
 
-打包前会把当前活跃槽的 dsh 快照成 `seed.tar`、把本机 Node 快照成 `node-runtime.tgz` 一并打进应用,所以**打包机上要先跑过一次**,让运行时存在。安装后首次启动直接解包,无需联网下载。
+- `seed.tar` — the `dsh` runtime currently installed in this machine's data directory
+- `node-runtime.tgz` — this machine's Node binary plus npm, so the installed app needs no preinstalled Node
 
-## 菜单
+Two consequences follow. **Run the app once before building**, or there is no runtime to snapshot and the build stops with `No active local dsh runtime`. And **build each platform's package on that platform** — a macOS-built Windows installer would contain a macOS Node binary. Cross-compiling is only possible by giving up the offline seed and downloading Node per target instead.
 
-- **插件管理…**:安装/卸载 dsh 插件,填写插件配置。
-- **检查更新**:双槽位更新流程,自检通过后询问是否重启服务。
-- **重启服务**:停掉当前服务进程组并以当前版本重启。
-- **打开数据目录 / 打开日志**。
-
-## 已知边界
-
-- dsh 处于 rc 阶段,壳依赖的契约刻意最小化:`dsh web --port N` + 根路径 200 即就绪。dsh 侧发生破坏性变更时优先检查这两点。
-- 本地端口对本机进程可见(dsh 目前无鉴权 token);随机端口是缓解,不是根治。
-- 对话依赖 `DEEPSEEK_API_KEY`;可在 dsh Web UI 的设置里配置,或于启动前导出该环境变量。
-- 仅在 macOS(Apple Silicon)上验证过。打包配置目前只有 mac 目标,Windows 见下节。
-- 应用为 ad-hoc 签名、未公证:首次打开需在"系统设置 → 隐私与安全性"里放行。
-
-## Windows 支持(代码已适配,**尚未在真机验证**)
-
-上游 dsh 本身支持 Windows(`@deepseek-ai/dsh` 无 `os` 限制,运行时自带
-`dsh-pwsh-local`、`dsh-tool-pwsh`、`dsh-sandbox-windows-acl`),壳这边的
-POSIX 假设已逐项改掉:
-
-| 位置 | 处理方式 |
-|---|---|
-| `src/server.js` 终止进程树 | POSIX 走 `kill(-pid)` 进程组;Windows 走 `taskkill /PID <pid> /T`,超时升级 `/F`。另加 `windowsHide` 避免每次启动闪控制台窗口 |
-| `src/runtime.js`、`src/toolchain.js` 解包 | `tar` 按名字调用(Win10 1803+ 的 System32\tar.exe 是 bsdtar,行为一致) |
-| `src/toolchain.js` 查找 Node | 按平台取 `node` / `node.exe`;Windows 额外搜 `%ProgramFiles%\nodejs`、nvm-windows(`NVM_SYMLINK` / `NVM_HOME`) |
-| npm 树位置 | Windows 是 `<root>\node_modules\npm`,POSIX 是 `<root>/lib/node_modules/npm`,查找与打包共用同一份定义 |
-| `scripts/prepare-seed.mjs` 数据目录 | 按平台解析 `%APPDATA%` / `~/Library/Application Support` / `$XDG_CONFIG_HOME` |
-| `scripts/prepare-node.mjs` 布局 | staged 树镜像目标平台的 Node 布局,使解包后的相对查找与真实安装一致 |
-| 托盘图标 | macOS 用模板图(黑+alpha,系统着色);Windows 用真实图标缩放,否则渲染成黑块 |
-| `package.json` | 新增 `win`(nsis + dir)目标与 `dist:win` 脚本 |
-
-### 打包必须在目标平台上做
-
-打包模型是**快照打包机**:`seed.tar` 是本机装好的 dsh 运行时,`node-runtime.tgz`
-是本机的 Node 二进制。所以 Windows 包只能在 Windows 上打,不能交叉打包——除非
-改成按目标平台下载官方 Node 并放弃离线种子(首启动联网装 dsh)。
+### macOS
 
 ```sh
 npm install
-npm start          # 先跑一次,让 dsh 运行时装到数据目录(打包要快照它)
-npm run dist:win   # 产出 NSIS 安装包
+npm start          # once, so the dsh runtime is installed
+npm run dist       # dist/mac-arm64/DeepSeek Harness.app
+npm run dist:mac   # dist/DeepSeek Harness-<version>-arm64.dmg
 ```
 
-### 在 Windows 上要验的三件事
+Builds are ad-hoc signed by `scripts/adhoc-sign.cjs` (an `afterPack` hook) and not notarized. Without that signature the renamed Electron binary carries a stale one, and Gatekeeper reports a quarantined copy as "damaged" rather than showing the normal unidentified-developer prompt.
 
-1. **退出后不留孤儿进程**——最关键的一条。退出应用,然后确认 `dsh` 的 node 进程
-   及其子进程(shell、PTY、language server)全部消失:
-   `Get-Process node | Where-Object { $_.Path -like '*dsh-desktop*' }` 应为空。
-   `taskkill /T` 的行为与 POSIX 进程组不同,只有真机跑过才算数。
-2. **首次启动解包种子**:数据目录 `%APPDATA%\dsh-desktop` 下应出现
-   `runtime\slot-a` 与 `node-runtime`,日志里有 `serving on <port>`。
-3. **托盘图标与菜单**可见可用;窗口关闭后应隐藏到托盘而非退出。
+### Windows
 
-## 贡献者
+Requirements: Windows 10 1803 or newer (for `tar.exe` in System32), [Node.js](https://nodejs.org) ≥ 22, and Git.
 
-- **Hu Yang** ([@huyang218](https://github.com/huyang218)) — 作者、维护者
+```powershell
+git clone https://github.com/huyang218/dsh-desktop.git
+cd dsh-desktop
+npm install
+npm start          # once, so the dsh runtime is installed under %APPDATA%
+npm run dist:win   # NSIS installer
+npm run dist       # or: unpacked app only, no installer
+```
 
-欢迎 issue 与 PR。改动涉及进程生命周期(启动、守护、退出)时,请在 macOS 或
-Windows 上实际跑一遍"退出应用 → 确认无孤儿进程",这类问题看代码看不出来。
+Output:
 
-## 许可
+```
+dist\
+├── dsh-desktop Setup <version>.exe   NSIS installer
+└── win-unpacked\                     unpacked app (npm run dist)
+```
 
-本项目以 [MIT](LICENSE) 发布。
+The installer is per-user and lets the user choose the install directory (`oneClick: false`, `perMachine: false`), so it needs no administrator rights. It is unsigned: SmartScreen will warn on first run until the executable earns reputation or you add a code-signing certificate under `build.win.certificateFile`.
 
-打包产物会再分发下列第三方组件,各自遵循其原许可,声明随包保留:
+`npm start` must come first here too. Skipping it fails during `predist` with `No active local dsh runtime under %APPDATA%\dsh-desktop\runtime`.
 
-| 组件 | 许可 | 随包位置 |
+After installing, verify the three things listed under [Platform support](#platform-support) — above all that quitting the app leaves no orphaned `node` processes.
+
+## Menu
+
+| Item | Effect |
+|---|---|
+| Plugins… | Install, remove and configure `dsh` plugins |
+| Check for updates | Dual-slot update, with a restart prompt after the self-test passes |
+| Restart service | Stops the current server tree and starts the same version again |
+| Open data directory / Open log | |
+
+## Data locations
+
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/dsh-desktop/` |
+| Windows | `%APPDATA%\dsh-desktop\` |
+
+```
+dsh-desktop/
+├── runtime/            installed dsh, slot-a | slot-b, current.json
+├── node-runtime/       bundled Node (packaged builds only)
+├── dsh-home/           DSH_HOME: profiles, sessions, settings
+└── dsh-desktop.log     app and server log
+```
+
+## Platform support
+
+| | Status |
+|---|---|
+| **macOS** (Apple Silicon) | Verified end to end |
+| **Windows** | Code adapted, **not yet verified on real hardware** |
+| Linux | Not attempted |
+
+`dsh` itself is cross-platform (no `os` restriction, and it ships pwsh and Windows-ACL sandbox backends), so the platform work is confined to this shell. Every POSIX assumption has a Windows counterpart: process-tree termination uses `taskkill /T` instead of a negative pid, `tar` is invoked by name, Node lookup takes `node.exe` and searches `%ProgramFiles%\nodejs` and nvm-windows, the tray uses a real icon instead of a macOS template image, and the data directory resolves through `%APPDATA%`.
+
+The one thing that needs a real Windows machine is **process-tree termination**. Killing a process group and running `taskkill /T` are different mechanisms, and getting it wrong produces an app that appears to exit cleanly while leaving orphaned `dsh` processes behind — invisible to code review. After quitting, this should print nothing:
+
+```powershell
+Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*dsh-desktop*' }
+```
+
+## Known limitations
+
+- `dsh` is at release-candidate stage. The contract this app depends on is deliberately minimal: `dsh web --port N`, plus HTTP 200 at the root meaning ready. Check those two first when an upstream change breaks something.
+- The local port is reachable by any process on the machine (`dsh` has no auth token yet). A random port narrows the window; it does not close it.
+- Conversations need `DEEPSEEK_API_KEY`, set either in the `dsh` web UI settings or in the environment before launch.
+- macOS builds are ad-hoc signed and not notarized: the first launch needs approval under System Settings → Privacy & Security.
+
+## Contributing
+
+Issues and pull requests are welcome.
+
+If a change touches the process lifecycle — start, supervision, shutdown — please verify on a real machine that quitting the app leaves no orphaned processes. That class of bug is invisible in review and does not reproduce in unit tests.
+
+**Contributors**
+
+- **Hu Yang** ([@huyang218](https://github.com/huyang218)) — author, maintainer
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+A packaged build redistributes the following, each under its own license, with notices retained in the package:
+
+| Component | License | Location in the package |
 |---|---|---|
-| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(`@deepseek-ai/dsh` 及其插件) | MIT | `Resources/runtime-seed.tar` |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`@deepseek-ai/dsh` and plugins) | MIT | `Resources/runtime-seed.tar` |
 | [Node.js](https://nodejs.org) | MIT | `Resources/node-runtime.tgz` → `LICENSE-node` |
-| [npm](https://github.com/npm/cli) | Artistic-2.0 | 同上 → `lib/node_modules/npm/LICENSE` |
-| [Electron](https://www.electronjs.org) | MIT | 应用框架 |
+| [npm](https://github.com/npm/cli) | Artistic-2.0 | same archive → `lib/node_modules/npm/LICENSE` |
+| [Electron](https://www.electronjs.org) | MIT | application framework |
 
-"DeepSeek" 是深度求索的商标。**本项目为非官方项目,与深度求索无隶属关系,也未获其背书。** 打包出的应用沿用 "DeepSeek Harness" 名称与鲸鱼图标以指明它承载的上游软件;这些标识的权利属于其所有者,不在本项目的 MIT 许可范围内。
+### Trademarks
 
-## 从旧版本升级
+"DeepSeek" is a trademark of its owner. **This project is unofficial, unaffiliated and unendorsed.** The packaged application carries the DeepSeek Harness name and whale icon to identify the upstream software it hosts; those marks belong to their owner and are not covered by this project's MIT grant.
 
-项目原名 `dsh-shell`,数据目录也叫 `dsh-shell`。新版本首次启动会自动把
-`~/Library/Application Support/dsh-shell` 改名为 `dsh-desktop`,已安装的运行时、
-会话和设置原样保留。若目标目录已存在,则不合并、不覆盖,继续使用新目录并在日志里
-记录旧目录位置。
+## Upgrading from `dsh-shell`
 
-应用的 `appId` 也随之改变,macOS 会将其视为另一个应用,**此前授予的系统权限
-(如辅助功能)需要重新授予**。
+This project was formerly named `dsh-shell`, as was its data directory. The first launch of a newer build renames `dsh-shell` to `dsh-desktop`, preserving the installed runtime, sessions and settings. If both directories exist, neither is merged nor overwritten: the new one is used and the old location is noted in the log. If the rename fails, the old directory keeps being used rather than starting empty beside it.
+
+The `appId` changed with the rename, so macOS treats it as a different application: **any system permissions granted before (such as Accessibility) must be granted again.**
