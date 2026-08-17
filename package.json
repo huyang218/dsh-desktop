@@ -3,7 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Unofficial desktop app for DeepSeek Harness (dsh): installs and updates the runtime, owns the server process and storage, and wraps the web UI in a window.",
-  "author": "Hu Yang",
+  "author": {
+    "name": "Hu Yang",
+    "url": "https://github.com/huyang218"
+  },
+  "contributors": [
+    {
+      "name": "Hu Yang",
+      "url": "https://github.com/huyang218"
+    }
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -20,9 +29,11 @@
     "start": "electron .",
     "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
     "predist": "npm run seed",
-    "dist": "electron-builder --mac dir",
-    "predist:dmg": "npm run seed",
-    "dist:dmg": "electron-builder --mac dmg"
+    "dist": "electron-builder --dir",
+    "predist:mac": "npm run seed",
+    "dist:mac": "electron-builder --mac dmg",
+    "predist:win": "npm run seed",
+    "dist:win": "electron-builder --win nsis"
   },
   "devDependencies": {
     "electron": "^38.0.0",
@@ -54,6 +65,18 @@
         "to": "node-runtime.version"
       }
     ],
+    "win": {
+      "icon": "assets/icon-1024.png",
+      "target": [
+        "nsis",
+        "dir"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
     "mac": {
       "identity": null,
       "icon": "assets/icon.icns",
