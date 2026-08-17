@@ -138,12 +138,12 @@ dsh-desktop/
 | | 状态 |
 |---|---|
 | **macOS**(Apple Silicon) | 已完整验证 |
-| **Windows** | 代码已适配,**尚未在真机验证** |
+| **Windows**(10 1803 及以上) | 已完整验证:NSIS 安装包、首次启动、干净退出 |
 | Linux | 未尝试 |
 
 `dsh` 本身是跨平台的(无 `os` 限制,且自带 pwsh 与 Windows ACL 沙箱后端),所以平台工作全部集中在本壳。每一处 POSIX 假设都有对应的 Windows 实现:进程树终止用 `taskkill /T` 而非负 PID,`tar` 按名字调用,Node 查找取 `node.exe` 并搜索 `%ProgramFiles%\nodejs` 与 nvm-windows,托盘使用真实图标而非 macOS 模板图,数据目录经 `%APPDATA%` 解析。
 
-唯一必须真机验证的是**进程树终止**。杀进程组与 `taskkill /T` 是两种不同机制,做错的表现是:应用看起来正常退出,却留下孤儿 `dsh` 进程——这种问题在代码审查里看不出来。退出应用后,下面这条命令应无输出:
+**进程树终止**是唯一只能靠真机确认的部分,现已确认:杀进程组与 `taskkill /T` 是两种不同机制,做错的表现是应用看起来正常退出、却留下孤儿 `dsh` 进程——这种问题在代码审查里看不出来。改动退出逻辑后值得重新验一次;退出应用后,下面这条命令应无输出:
 
 ```powershell
 Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*dsh-desktop*' }

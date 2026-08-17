@@ -139,12 +139,12 @@ dsh-desktop/
 | | Status |
 |---|---|
 | **macOS** (Apple Silicon) | Verified end to end |
-| **Windows** | Code adapted, **not yet verified on real hardware** |
+| **Windows** (10 1803 or newer) | Verified end to end: NSIS installer, first run, clean exit |
 | Linux | Not attempted |
 
 `dsh` itself is cross-platform (no `os` restriction, and it ships pwsh and Windows-ACL sandbox backends), so the platform work is confined to this shell. Every POSIX assumption has a Windows counterpart: process-tree termination uses `taskkill /T` instead of a negative pid, `tar` is invoked by name, Node lookup takes `node.exe` and searches `%ProgramFiles%\nodejs` and nvm-windows, the tray uses a real icon instead of a macOS template image, and the data directory resolves through `%APPDATA%`.
 
-The one thing that needs a real Windows machine is **process-tree termination**. Killing a process group and running `taskkill /T` are different mechanisms, and getting it wrong produces an app that appears to exit cleanly while leaving orphaned `dsh` processes behind — invisible to code review. After quitting, this should print nothing:
+**Process-tree termination** is the part that could only be settled on real hardware, and was: killing a process group and running `taskkill /T` are different mechanisms, and getting it wrong produces an app that appears to exit cleanly while leaving orphaned `dsh` processes behind — invisible to code review. Worth re-checking after any change to shutdown; after quitting, this should print nothing:
 
 ```powershell
 Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*dsh-desktop*' }
