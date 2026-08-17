@@ -38,6 +38,11 @@ const MESSAGES = {
     'menu.paste': '粘贴',
     'menu.selectAll': '全选',
     'tray.tooltip': 'DeepSeek Harness(dsh {version})',
+    'tray.checking': '正在检查更新…',
+    'tray.installing': '正在下载安装 dsh {version} · 已用 {elapsed}',
+    'tray.verifying': '新版本启动自检中 · 已用 {elapsed}',
+    'tray.title': '更新中 {elapsed}',
+    'menu.updating': '更新进行中…',
     'window.plugins': '插件管理',
 
     // Buttons
@@ -138,6 +143,11 @@ const MESSAGES = {
     'menu.paste': 'Paste',
     'menu.selectAll': 'Select All',
     'tray.tooltip': 'DeepSeek Harness (dsh {version})',
+    'tray.checking': 'Checking for updates…',
+    'tray.installing': 'Downloading dsh {version} · {elapsed} elapsed',
+    'tray.verifying': 'Verifying the new version starts · {elapsed} elapsed',
+    'tray.title': 'Updating {elapsed}',
+    'menu.updating': 'Update in progress…',
     'window.plugins': 'Plugins',
 
     'button.retry': 'Retry',

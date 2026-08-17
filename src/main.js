@@ -141,9 +141,10 @@ function applyLocale(id) {
   log(`locale set to ${getLocale()}`)
   buildMenu()
   if (state.tray && !state.tray.isDestroyed()) {
-    state.tray.destroy()
-    state.tray = undefined
-    createTray()
+    // Re-set rather than recreate: destroying the Tray makes the icon vanish
+    // and reappear in the menu bar, and would drop a running update's display.
+    state.tray.setContextMenu(trayMenu())
+    paintTray()
   }
   if (state.pluginsWindow && !state.pluginsWindow.isDestroyed()) {
     state.pluginsWindow.reload()
@@ -330,6 +331,7 @@ async function updateRuntime() {
   }
   state.updating = true
   try {
+    setUpdatePhase('checking')
     const pointer = await readPointer(paths.runtimeBase)
     const current = pointer?.version ?? state.runtime?.version
     let latest
@@ -339,6 +341,7 @@ async function updateRuntime() {
       throw new Error(t('error.checkFailed', { message: error?.message ?? error }))
     }
     log(`update check: installed ${current}, latest ${latest}`)
+    setUpdatePhase(null)
     if (latest === current) {
       await dialog.showMessageBox(state.window, { message: t('dialog.upToDate', { version: current }) })
       return
@@ -357,11 +360,13 @@ async function updateRuntime() {
     const target = inactiveSlot(pointer?.slot)
     const dir = slotDir(paths.runtimeBase, target)
     log(`installing ${DSH_PACKAGE}@${latest} into ${target} …`)
+    setUpdatePhase('installing', { version: latest })
     const version = await installIntoSlot({
       toolchain: state.toolchain, dir, spec: `${DSH_PACKAGE}@${latest}`, log,
     })
 
     // Boot test in the new slot before committing to it.
+    setUpdatePhase('verifying')
     const testPort = await getFreePort()
     const probe = await startServer({
       slotDir: dir, port: testPort, dshHome: paths.dshHome,
@@ -373,6 +378,7 @@ async function updateRuntime() {
     await activateSlot(paths.runtimeBase, { slot: target, version })
     state.runtime = { slot: target, dir, version }
     log(`activated ${version} in ${target}`)
+    setUpdatePhase(null)
 
     const { response } = await dialog.showMessageBox(state.window, {
       message: t('dialog.updated', { version }),
@@ -383,6 +389,9 @@ async function updateRuntime() {
     })
     if (response === 0) await restartServer()
   } finally {
+    // Covers the cancelled and failed paths too: the tray must never be left
+    // claiming an update is running.
+    setUpdatePhase(null)
     state.updating = false
   }
 }
@@ -536,7 +545,9 @@ function actionItems() {
     { label: t('menu.plugins'), click: openPluginManager },
     { label: t('menu.settings'), submenu: [{ label: t('menu.language'), submenu: languageItems() }] },
     { type: 'separator' },
-    { label: t('menu.checkUpdate'), click: () => updateRuntime().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
+    state.update
+      ? { label: t('menu.updating'), enabled: false }
+      : { label: t('menu.checkUpdate'), click: () => updateRuntime().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
     { label: t('menu.restartService'), click: () => restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e)) },
     { type: 'separator' },
     { label: t('menu.openDataDir'), click: () => shell.openPath(app.getPath('userData')) },
@@ -578,6 +589,16 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
+function trayMenu() {
+  return Menu.buildFromTemplate([
+    { label: t('menu.showWindow'), click: showWindow },
+    { type: 'separator' },
+    ...actionItems(),
+    { type: 'separator' },
+    { label: t('menu.quit'), click: () => app.quit() },
+  ])
+}
+
 function createTray() {
   // macOS wants a `...Template.png` (black + alpha) so it can tint the icon
   // for light/dark menu bars, with the @2x variant beside it for Retina.
@@ -587,15 +608,65 @@ function createTray() {
     ? nativeImage.createFromPath(path.join(assets, 'trayTemplate.png'))
     : nativeImage.createFromPath(path.join(assets, 'icon-1024.png')).resize({ width: 16, height: 16 })
   const tray = new Tray(icon)
-  tray.setToolTip(t('tray.tooltip', { version: state.runtime.version }))
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: t('menu.showWindow'), click: showWindow },
-    { type: 'separator' },
-    ...actionItems(),
-    { type: 'separator' },
-    { label: t('menu.quit'), click: () => app.quit() },
-  ]))
   state.tray = tray
+  tray.setContextMenu(trayMenu())
+  paintTray()
+}
+
+/** mm:ss for a duration that is expected to run into minutes. */
+function formatElapsed(ms) {
+  const total = Math.max(0, Math.round(ms / 1000))
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
+}
+
+/**
+ * Draws the current state onto the tray: its tooltip always, and on macOS a
+ * short label beside the icon.
+ *
+ * The tray is where an update reports progress, because it is the one surface
+ * that can be repainted while the user is looking at something else. Menus
+ * cannot: an Electron menu is immutable once built, so refreshing a countdown
+ * inside one means rebuilding it, which closes the menu the user just opened.
+ */
+function paintTray() {
+  const tray = state.tray
+  if (!tray || tray.isDestroyed()) return
+  const update = state.update
+  if (!update) {
+    tray.setToolTip(t('tray.tooltip', { version: state.runtime?.version ?? '' }))
+    if (process.platform === 'darwin') tray.setTitle('')
+    return
+  }
+  const elapsed = formatElapsed(Date.now() - update.startedAt)
+  tray.setToolTip(t(`tray.${update.phase}`, { ...update.params, elapsed }))
+  if (process.platform === 'darwin') tray.setTitle(` ${t('tray.title', { elapsed })}`)
+}
+
+/**
+ * Enters, advances or leaves the update-progress display.
+ *
+ * @param {'checking'|'installing'|'verifying'|null} phase null ends it
+ * @param {Record<string, string>} [params] values for the phase's message
+ */
+function setUpdatePhase(phase, params = {}) {
+  if (!phase) {
+    clearInterval(state.updateTimer)
+    state.updateTimer = undefined
+    state.update = undefined
+    // Restore the context menu's normal "check for updates" entry.
+    if (state.tray && !state.tray.isDestroyed()) state.tray.setContextMenu(trayMenu())
+    paintTray()
+    return
+  }
+  const startedAt = state.update?.startedAt ?? Date.now()
+  const first = !state.update
+  state.update = { phase, params, startedAt }
+  // The elapsed time lives in the tooltip and the macOS title, which repaint
+  // freely. The context menu is rebuilt only when the phase changes, so an
+  // open menu is not yanked away once a second.
+  if (state.tray && !state.tray.isDestroyed()) state.tray.setContextMenu(trayMenu())
+  if (first) state.updateTimer = setInterval(paintTray, 1000)
+  paintTray()
 }
 
 async function main() {
