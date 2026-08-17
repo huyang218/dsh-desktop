@@ -58,11 +58,13 @@ export async function startServer({ slotDir, port, dshHome, cwd, toolchain, log 
  *
  * @param {number} port server port
  * @param {object} [options]
- * @param {number} [options.timeoutMs] overall deadline (default 60s)
+ * @param {number} [options.timeoutMs] overall deadline (default 120s — a first
+ *   launch competing with a seed deploy, or any busy disk, has been seen to
+ *   need well past a minute, and a premature verdict looks like a crash)
  * @param {() => boolean} [options.aborted] returns true when waiting should stop
  * @returns {Promise<boolean>} true when healthy, false on timeout/abort
  */
-export async function waitHealthy(port, { timeoutMs = 60_000, aborted } = {}) {
+export async function waitHealthy(port, { timeoutMs = 120_000, aborted } = {}) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (aborted?.()) return false

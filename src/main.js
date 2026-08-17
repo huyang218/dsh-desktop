@@ -112,10 +112,48 @@ function log(line) {
   } catch { /* logging must never take the shell down */ }
 }
 
-function fatal(title, error) {
+/**
+ * Reports a startup failure the shell cannot continue past, then quits.
+ *
+ * Deliberately NOT `dialog.showErrorBox`: that call is synchronous and blocks
+ * the main process for as long as the box is up, so the app stops answering
+ * everything — including a quit request — and has to be force-killed.
+ */
+async function fatal(title, error) {
   log(`FATAL ${title}: ${error?.stack ?? error}`)
-  dialog.showErrorBox(title, String(error?.message ?? error))
+  await dialog.showMessageBox({
+    type: 'error',
+    message: title,
+    detail: `${error?.message ?? error}\n日志:${paths.logFile}`,
+    buttons: ['退出'],
+  })
   app.quit()
+}
+
+/**
+ * Reports a launch that failed but may well succeed on another try — a health
+ * wait that expired because the machine was busy is the common case, and
+ * quitting the app over it strands the user with no way back in.
+ *
+ * @param {unknown} error what launchServer threw
+ */
+async function offerLaunchRetry(error) {
+  log(`launch failed: ${error?.stack ?? error}`)
+  const { response } = await dialog.showMessageBox({
+    type: 'error',
+    message: '启动失败',
+    detail: `${error?.message ?? error}\n\n服务可能只是启动较慢(首次安装或磁盘繁忙时)。`,
+    buttons: ['重试', '退出'],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (response !== 0) {
+    app.quit()
+    return
+  }
+  // restartServer() stops whatever the failed attempt left running: a server
+  // that was merely slow is still booting, and a second one would fight it.
+  await restartServer().catch(offerLaunchRetry)
 }
 
 function errorDialog(title, error) {
@@ -461,10 +499,15 @@ async function main() {
     })
     buildMenu()
     createTray()
-    await launchServer()
   } catch (error) {
-    fatal('启动失败', error)
+    // Environment problems (no usable Node, a runtime that will not deploy)
+    // are not something another attempt fixes.
+    await fatal('启动失败', error)
+    return
   }
+  // The environment is ready; past this point a failure is about the server
+  // itself, and those are worth another try rather than an app that quits.
+  await launchServer().catch(offerLaunchRetry)
 }
 
 const locked = app.requestSingleInstanceLock()
