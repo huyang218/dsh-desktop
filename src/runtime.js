@@ -136,7 +136,7 @@ export async function ensureRuntime({ baseDir, toolchain, seedTar, log }) {
     await rm(dir, { recursive: true, force: true })
     await mkdir(dir, { recursive: true })
     await new Promise((resolve, reject) => {
-      const child = spawn('/usr/bin/tar', ['-xf', seedTar, '-C', dir], { stdio: 'ignore' })
+      const child = spawn('tar', ['-xf', seedTar, '-C', dir], { stdio: 'ignore', windowsHide: true })
       child.on('error', reject)
       child.on('exit', code => (code === 0 ? resolve() : reject(new Error(`种子解包退出码 ${code}`))))
     })

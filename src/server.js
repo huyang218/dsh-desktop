@@ -42,6 +42,9 @@ export async function startServer({ slotDir, port, dshHome, cwd, toolchain, log 
     env: childEnv(toolchain, { DSH_HOME: dshHome }),
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Without this the detached child owns a console window on Windows, which
+    // flashes up on every start and on every automatic restart.
+    windowsHide: true,
   })
   for (const stream of [child.stdout, child.stderr]) {
     stream.setEncoding('utf8')
@@ -83,14 +86,35 @@ export async function waitHealthy(port, { timeoutMs = 60_000, aborted } = {}) {
 export async function stopServer(child, graceMs = 5000) {
   if (child.exitCode !== null || child.signalCode !== null) return
   const exited = once(child, 'exit')
-  try {
-    process.kill(-child.pid, 'SIGTERM')
-  } catch { /* group already gone: fall through to the wait below */ }
+  killTree(child.pid, { force: false })
   const result = await Promise.race([exited, sleep(graceMs, 'timeout')])
   if (result === 'timeout') {
-    try {
-      process.kill(-child.pid, 'SIGKILL')
-    } catch { /* group exited between the check and the kill */ }
+    killTree(child.pid, { force: true })
     await exited
   }
+}
+
+/**
+ * Ends the server and everything it spawned.
+ *
+ * A negative pid means "the process group" only on POSIX; Windows has no such
+ * concept, and signalling the child alone there leaves dsh's own children —
+ * shells, PTYs, language servers — running after the app exits. `taskkill /T`
+ * is the equivalent that walks the tree.
+ *
+ * @param {number} pid the server process id
+ * @param {{ force: boolean }} options escalate past a graceful request
+ */
+function killTree(pid, { force }) {
+  try {
+    if (process.platform === 'win32') {
+      const args = ['/PID', String(pid), '/T']
+      if (force) args.push('/F')
+      // Synchronous and fire-and-forget: a tree that is already gone exits
+      // non-zero, which is the normal case on the escalation path.
+      spawn('taskkill', args, { stdio: 'ignore', windowsHide: true })
+      return
+    }
+    process.kill(-pid, force ? 'SIGKILL' : 'SIGTERM')
+  } catch { /* already gone: the caller is waiting on 'exit' either way */ }
 }

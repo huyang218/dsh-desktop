@@ -14,9 +14,38 @@ import path from 'node:path'
 
 const MIN_MAJOR = 22
 
-/** Directories searched for `node` in addition to the inherited PATH. */
+const isWindows = process.platform === 'win32'
+
+/** Node's executable name on this platform. */
+export const NODE_BIN = isWindows ? 'node.exe' : 'node'
+
+/**
+ * npm's package tree, relative to the directory holding the Node binary.
+ * Windows keeps node.exe at the install root with npm beside it; POSIX puts
+ * the binary in bin/ and npm under lib/.
+ */
+const NPM_TREE_FROM_BIN_DIR = isWindows
+  ? ['node_modules', 'npm']
+  : ['..', 'lib', 'node_modules', 'npm']
+
+/** Directories searched for the Node binary in addition to the inherited PATH. */
 function candidateDirs() {
   const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
+  if (isWindows) {
+    for (const base of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']]) {
+      if (base) dirs.push(path.join(base, 'nodejs'))
+    }
+    // nvm-windows symlinks the active version and keeps the rest beside it;
+    // search both so a machine without nodejs on PATH still resolves.
+    for (const base of [process.env.NVM_SYMLINK, process.env.NVM_HOME]) {
+      if (!base || !existsSync(base)) continue
+      dirs.push(base)
+      for (const entry of readdirSync(base).sort().reverse()) {
+        dirs.push(path.join(base, entry))
+      }
+    }
+    return dirs
+  }
   dirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin')
   const nvmVersions = path.join(homedir(), '.nvm', 'versions', 'node')
   if (existsSync(nvmVersions)) {
@@ -45,13 +74,13 @@ function nodeMajor(nodeBin) {
  */
 export function findToolchain() {
   for (const dir of candidateDirs()) {
-    const nodeBin = path.join(dir, 'node')
+    const nodeBin = path.join(dir, NODE_BIN)
     if (!existsSync(nodeBin)) continue
     if (nodeMajor(nodeBin) < MIN_MAJOR) continue
     // npm ships beside node as a script; run it as `node npm-cli.js` so it
-    // works regardless of shebang/PATH.
+    // works regardless of shebang/PATH (and of Windows having no shebangs).
     const npmCandidates = [
-      path.join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+      path.join(dir, ...NPM_TREE_FROM_BIN_DIR, 'bin', 'npm-cli.js'),
       path.join(dir, 'npm'),
     ]
     for (const npmCli of npmCandidates) {
@@ -87,12 +116,17 @@ export function ensureBundledToolchain({ tarPath, versionFile, destBase, log }) 
     log?.(`部署内置 Node 运行时 ${wanted} …`)
     rmSync(dest, { recursive: true, force: true })
     mkdirSync(dest, { recursive: true })
-    execFileSync('/usr/bin/tar', ['-xzf', tarPath, '-C', dest])
+    // `tar` by name, not /usr/bin/tar: Windows 10 1803+ ships bsdtar as
+    // System32\tar.exe, which handles this archive identically.
+    execFileSync('tar', ['-xzf', tarPath, '-C', dest])
   }
-  const nodeBin = path.join(dest, 'bin', 'node')
-  const npmCli = path.join(dest, 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  // The staged layout mirrors the platform's own Node install, so the same
+  // relative lookups work here as in findToolchain().
+  const nodeDir = isWindows ? dest : path.join(dest, 'bin')
+  const nodeBin = path.join(nodeDir, NODE_BIN)
+  const npmCli = path.join(nodeDir, ...NPM_TREE_FROM_BIN_DIR, 'bin', 'npm-cli.js')
   if (!existsSync(nodeBin) || !existsSync(npmCli)) return undefined
-  return { nodeBin, nodeDir: path.join(dest, 'bin'), npmCli }
+  return { nodeBin, nodeDir, npmCli }
 }
 
 /**

@@ -400,9 +400,13 @@ function buildMenu() {
 }
 
 function createTray() {
-  // A `...Template.png` image (black + alpha) lets macOS tint the icon for
-  // light/dark menu bars; the @2x variant beside it serves Retina displays.
-  const icon = nativeImage.createFromPath(path.join(assets, 'trayTemplate.png'))
+  // macOS wants a `...Template.png` (black + alpha) so it can tint the icon
+  // for light/dark menu bars, with the @2x variant beside it for Retina.
+  // Windows has no template concept and would draw that same file as a black
+  // smudge, so it gets the real icon scaled down instead.
+  const icon = process.platform === 'darwin'
+    ? nativeImage.createFromPath(path.join(assets, 'trayTemplate.png'))
+    : nativeImage.createFromPath(path.join(assets, 'icon-1024.png')).resize({ width: 16, height: 16 })
   const tray = new Tray(icon)
   tray.setToolTip(`DeepSeek Harness(dsh ${state.runtime.version})`)
   tray.setContextMenu(Menu.buildFromTemplate([

@@ -17,11 +17,22 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readPointer, slotDir, installedVersion, DSH_PACKAGE } from '../src/runtime.js'
 
+/** Electron's `app.getPath('appData')`, resolved without booting Electron. */
+function appDataDir() {
+  if (process.platform === 'win32') {
+    return process.env.APPDATA ?? path.join(homedir(), 'AppData', 'Roaming')
+  }
+  if (process.platform === 'darwin') {
+    return path.join(homedir(), 'Library', 'Application Support')
+  }
+  return process.env.XDG_CONFIG_HOME ?? path.join(homedir(), '.config')
+}
+
 const projectRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
-// Mirrors the userData resolution in src/main.js; macOS-only, like the dist
-// target. The pre-rename directory is still read when the app has not been
-// launched since the rename, so packaging works before the migration runs.
-const appSupport = path.join(homedir(), 'Library', 'Application Support')
+// Mirrors the userData resolution in src/main.js. The pre-rename directory is
+// still read when the app has not been launched since the rename, so packaging
+// works before the migration has run.
+const appSupport = appDataDir()
 const runtimeBase = ['dsh-desktop', 'dsh-shell']
   .map(dir => path.join(appSupport, dir, 'runtime'))
   .find(dir => existsSync(dir)) ?? path.join(appSupport, 'dsh-desktop', 'runtime')
@@ -40,5 +51,5 @@ if (!existsSync(path.join(source, 'node_modules', DSH_PACKAGE, 'package.json')))
 
 const seedTar = path.join(projectRoot, 'seed.tar')
 rmSync(seedTar, { force: true })
-execFileSync('/usr/bin/tar', ['-cf', seedTar, '-C', source, '.'])
+execFileSync('tar', ['-cf', seedTar, '-C', source, '.'])
 console.log(`seeded ${DSH_PACKAGE}@${await installedVersion(source)} from ${pointer.slot} into seed.tar`)
