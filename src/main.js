@@ -52,6 +52,11 @@ const assets = path.join(here, '..', 'assets')
 const locations = resolveLocations(app.getPath('appData'))
 app.setPath('userData', locations.dataDir)
 
+// Windows ties notifications to an application identity, and one that is not
+// set means notifications that never appear — with no error to notice. It
+// also keeps the taskbar from treating each launch as a different app.
+if (process.platform === 'win32') app.setAppUserModelId('io.github.huyang218.dsh-desktop')
+
 // macOS fires this before the app is ready — for a launch by Open With it is
 // the whole reason the app is starting — so it is registered here rather than
 // in main(), and the paths wait in the queue until there is a chat to put
@@ -649,9 +654,13 @@ function flushPendingFiles() {
 
 /** A notification when there is one, a dialog when there is not. */
 function notify(title, body) {
-  if (Notification.isSupported()) {
-    new Notification({ title, body }).show()
-    return
+  try {
+    if (Notification.isSupported()) {
+      new Notification({ title, body }).show()
+      return
+    }
+  } catch (error) {
+    log(`notification failed: ${error?.message ?? error}`)
   }
   dialog.showMessageBox(state.window, { message: title, detail: body, buttons: [t('button.ok')] })
 }
@@ -883,7 +892,12 @@ function openSettingsWindow() {
  */
 function registerFileHandoff() {
   ipcMain.on('chat:files-dropped', (_event, paths) => {
-    if (Array.isArray(paths)) sendFilesToChat(paths.map(String)).catch(error => log(`drop failed: ${error?.message ?? error}`))
+    if (!Array.isArray(paths)) return
+    // Logged on arrival as well as on outcome: without this line a drop the
+    // page swallowed and a drop that failed to insert look identical
+    // afterwards, and they need different fixes.
+    log(`drop received: ${paths.length} path(s)`)
+    sendFilesToChat(paths.map(String)).catch(error => log(`drop failed: ${error?.message ?? error}`))
   })
   // Alongside the listener that raises the window; this one reads the files
   // out of the command line that Windows started the second instance with.
