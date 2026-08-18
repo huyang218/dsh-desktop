@@ -72,6 +72,18 @@ export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-b
 
 由此有两条约束。**打包前必须先跑一次应用**,否则没有运行时可快照,构建会以 `No active local dsh runtime` 中止。以及**每个平台的包必须在该平台上打**——在 macOS 上打出的 Windows 安装包里装的是 macOS 的 Node 二进制。要交叉编译,只能放弃离线种子、改为按目标平台下载 Node。
 
+第一条约束可以在构建机上放宽:`node scripts/prepare-seed.mjs --bootstrap`(或设 `DSH_SEED_BOOTSTRAP=1`,它能穿过 npm 的 pre 钩子)会在没有运行时的机器上先装一份再快照——CI 走的就是这条。第二条绕不开,所以有了下面的 Actions。
+
+### GitHub Actions
+
+`.github/workflows/build.yml` 在三台机器上各打一份:macOS Apple Silicon(`macos-14`)、macOS Intel(`macos-13`)、Windows(`windows-latest`)。触发方式是手动运行,或推一个 `v*` 标签。
+
+推标签时,产物直接传到对应的 Release(用 runner 自带的 `gh`,不引入第三方 action)。手动运行默认**不**上传安装包:免费账户的 artifact 存储只有 500MB,而一个 dmg 就 200MB 出头,三个平台会直接撑满;需要产物时在运行对话框里勾选 `upload`,用完记得删。
+
+工作流里 `setup-node` 固定的 Node 版本不只是构建工具——`npm run seed` 会把它的二进制和 npm 打进应用,所以那就是打包版实际运行 `dsh` 用的 Node。
+
+签名方面与本机打包一致:macOS 仍是 ad-hoc、Windows 未签名。工作流末尾留了一段注释,说明拿到 Apple Developer ID 之后要加哪些 secrets——除了过 Gatekeeper,更实际的收益是 macOS 把隐私授权(比如「文稿」目录)绑定在代码签名上,而 ad-hoc 签名每次构建都变,等于每次更新都悄悄吊销用户已经给过的授权;Developer ID 签名跨构建稳定,这个毛病随之消失。
+
 ### macOS
 
 ```sh

@@ -9,13 +9,20 @@
  *
  * Run the app (or let it install) at least once locally so an active slot
  * exists before packaging.
+ *
+ * `--bootstrap` (or DSH_SEED_BOOTSTRAP=1, which survives the npm pre-hooks)
+ * installs the runtime first when there is none. That is for build machines:
+ * CI has never launched the app, so it has nothing to snapshot. The env var
+ * exists so a CI job can run the very same `npm run dist:*` a person runs,
+ * rather than a special-cased command that then goes untested locally.
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { readPointer, slotDir, installedVersion, DSH_PACKAGE } from '../src/runtime.js'
+import { ensureRuntime, readPointer, slotDir, installedVersion, DSH_PACKAGE } from '../src/runtime.js'
+import { findToolchain } from '../src/toolchain.js'
 
 /** Electron's `app.getPath('appData')`, resolved without booting Electron. */
 function appDataDir() {
@@ -37,14 +44,24 @@ const runtimeBase = ['dsh-desktop', 'dsh-shell']
   .map(dir => path.join(appSupport, dir, 'runtime'))
   .find(dir => existsSync(dir)) ?? path.join(appSupport, 'dsh-desktop', 'runtime')
 
-const pointer = await readPointer(runtimeBase)
+const bootstrap = process.argv.includes('--bootstrap') || process.env.DSH_SEED_BOOTSTRAP === '1'
+const isComplete = dir => existsSync(path.join(dir, 'node_modules', DSH_PACKAGE, 'package.json'))
+
+let pointer = await readPointer(runtimeBase)
+if (bootstrap && (!pointer || !isComplete(slotDir(runtimeBase, pointer.slot)))) {
+  // The same installer the app runs on first launch, minus Electron:
+  // src/runtime.js imports none of it, which is what makes this possible.
+  const runtime = await ensureRuntime({ baseDir: runtimeBase, toolchain: findToolchain(), log: console.log })
+  pointer = { slot: runtime.slot, version: runtime.version }
+}
 if (!pointer) {
   console.error(`No active local dsh runtime under ${runtimeBase}.`)
-  console.error('Launch the app once (it installs the runtime) before packaging.')
+  console.error('Launch the app once (it installs the runtime) before packaging,')
+  console.error('or pass --bootstrap to install one now (what CI does).')
   process.exit(1)
 }
 const source = slotDir(runtimeBase, pointer.slot)
-if (!existsSync(path.join(source, 'node_modules', DSH_PACKAGE, 'package.json'))) {
+if (!isComplete(source)) {
   console.error(`Active slot ${source} is incomplete; reinstall before packaging.`)
   process.exit(1)
 }

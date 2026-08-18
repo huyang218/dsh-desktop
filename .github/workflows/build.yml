@@ -1,0 +1,150 @@
+# Packaged builds for every platform the app supports.
+#
+# Packaging snapshots the build machine: `npm run seed` archives the dsh
+# runtime and the Node toolchain found on it, which is why a Windows installer
+# has to be built on Windows and an Intel dmg on an Intel Mac. One matrix here
+# replaces three machines nobody has.
+#
+# The runner has never launched the app, so it has no runtime to snapshot.
+# DSH_SEED_BOOTSTRAP lets the seed step install one first — set on the job so
+# CI runs exactly the `npm run dist:*` a person runs locally, rather than a
+# special-cased command that then goes untested.
+#
+# Signing: macOS builds are ad-hoc signed by the afterPack hook and Windows
+# builds are unsigned, the same as a local build. See the commented block at
+# the end of the macOS job for what to add once a Developer ID exists.
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Attach the installers as workflow artifacts (they are large; see the note in the workflow)'
+        type: boolean
+        default: false
+  push:
+    tags: ['v*']
+
+# A tag build and a manual run of the same commit have nothing to share, but
+# two pushes of the same tag do.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    # Raised from the read-only default for the release upload below, which is
+    # the only step that writes anything back to the repository.
+    permissions:
+      contents: write
+    timeout-minutes: 45
+    strategy:
+      # One platform failing should not hide whether the others are fine.
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS (Apple Silicon)
+            os: macos-14
+            script: dist:mac
+            artifacts: dist/*.dmg
+            cache: |
+              ~/Library/Caches/electron
+              ~/Library/Caches/electron-builder
+          - label: macOS (Intel)
+            os: macos-13
+            script: dist:mac
+            artifacts: dist/*.dmg
+            cache: |
+              ~/Library/Caches/electron
+              ~/Library/Caches/electron-builder
+          - label: Windows
+            os: windows-latest
+            script: dist:win
+            artifacts: dist/*.exe
+            cache: |
+              ~\AppData\Local\electron\Cache
+              ~\AppData\Local\electron-builder\Cache
+    env:
+      # Install the dsh runtime when the machine has none to snapshot.
+      DSH_SEED_BOOTSTRAP: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      # This Node is not just the build tool: `npm run seed` copies the binary
+      # and npm into the app, so it is the Node the packaged app will ship and
+      # run dsh on. Pinning it here is what makes that choice deliberate.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      # Electron's postinstall pulls ~100MB from GitHub Releases, outside the
+      # npm registry, and electron-builder fetches its own helper binaries.
+      - name: Cache Electron downloads
+        uses: actions/cache@v4
+        with:
+          path: ${{ matrix.cache }}
+          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-electron-
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run ${{ matrix.script }}
+
+      - name: List what was built
+        shell: bash
+        run: ls -lh dist/*.dmg dist/*.exe 2>/dev/null || ls -lh dist
+
+      # Off by default: a free account gets 500MB of artifact storage and a
+      # single dmg is over 200MB, so three platforms would fill it. A manual
+      # run is normally asking "does it still build"; tick the box when the
+      # installers themselves are wanted, and delete them when done.
+      - name: Upload installers
+        if: inputs.upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ runner.os }}-${{ runner.arch }}
+          path: ${{ matrix.artifacts }}
+          retention-days: 3
+          if-no-files-found: error
+
+      # A tag build publishes instead, where storage is not the constraint.
+      # `gh` is preinstalled on every runner, so no third-party action takes
+      # part in publishing. Creating the release is idempotent: three jobs
+      # race for it and only the first one wins, which is the intent.
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --verify-tag --generate-notes --title "$tag" \
+            || gh release view "$tag" >/dev/null
+          gh release upload "$tag" ${{ matrix.artifacts }} --clobber
+
+      # Signing and notarization, once there is an Apple Developer ID.
+      # Add the certificate and credentials as repository secrets, drop
+      # `identity: null` from build.mac in package.json, and set on the macOS
+      # rows above:
+      #
+      #   env:
+      #     CSC_LINK: ${{ secrets.MAC_CERT_P12_BASE64 }}
+      #     CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #
+      # Worth doing beyond Gatekeeper: macOS binds a privacy permission (the
+      # Documents folder, say) to the app's code signature, and an ad-hoc
+      # signature changes with every build — so every update silently revokes
+      # what the user granted. A Developer ID signature is stable across
+      # builds and ends that.

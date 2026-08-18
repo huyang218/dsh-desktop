@@ -73,6 +73,18 @@ Packaging **snapshots the packaging machine**. `npm run seed` — which every `d
 
 Two consequences follow. **Run the app once before building**, or there is no runtime to snapshot and the build stops with `No active local dsh runtime`. And **build each platform's package on that platform** — a macOS-built Windows installer would contain a macOS Node binary. Cross-compiling is only possible by giving up the offline seed and downloading Node per target instead.
 
+The first consequence can be relaxed on a build machine: `node scripts/prepare-seed.mjs --bootstrap` (or `DSH_SEED_BOOTSTRAP=1`, which survives npm's pre-hooks) installs a runtime first when the machine has none, then snapshots it. That is how CI builds. The second cannot be relaxed, which is what the Actions workflow is for.
+
+### GitHub Actions
+
+`.github/workflows/build.yml` builds on three machines: macOS Apple Silicon (`macos-14`), macOS Intel (`macos-13`) and Windows (`windows-latest`). It runs on demand, or when a `v*` tag is pushed.
+
+A tag build uploads the installers straight to that release, using the `gh` CLI already on every runner rather than a third-party action. A manual run does **not** upload them by default: a free account gets 500MB of artifact storage and a single dmg is over 200MB, so three platforms would fill it — tick `upload` in the run dialog when the installers are what you want, and delete them afterwards.
+
+The Node version pinned by `setup-node` is not only the build tool: `npm run seed` copies that binary and npm into the app, so it is the Node the packaged app ships and runs `dsh` on.
+
+Signing matches a local build — ad-hoc on macOS, unsigned on Windows. A comment at the end of the workflow lists the secrets to add once an Apple Developer ID exists. Beyond Gatekeeper, the practical gain is that macOS binds a privacy permission (the Documents folder, say) to the app's code signature, and an ad-hoc signature changes with every build — so every update silently revokes what the user granted. A Developer ID signature is stable across builds and ends that.
+
 ### macOS
 
 ```sh
