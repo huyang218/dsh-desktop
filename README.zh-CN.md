@@ -30,7 +30,7 @@
 | **存储** | `DSH_HOME` 指向应用数据目录内部,profiles、会话与设置全部归应用管理。菜单可直接打开数据目录与日志。 |
 | **代理设置** | 应用有两条互不相干的网络:窗口自身的请求走 Chromium,而 npm(装运行时)、pnpm(装插件)、以及真正调用模型 API 的 `dsh` 服务进程读的是环境变量。GUI 应用从启动台打开时两者都拿不到——终端里 `export` 的代理它看不见,系统代理开关又常常是关的。菜单「设置 → 代理…」一次配好两条,并能分别测通。 |
 | **内置工具链** | 打包版自带 Node 运行时,目标机器无需预装任何东西。源码运行时回退为在本机查找 Node ≥ 22(PATH、nvm、Homebrew、`%ProgramFiles%`),这也顺带绕开了 GUI 应用不继承 shell `PATH` 的问题。 |
-| **插件管理** | 在窗口里安装、更新、卸载 `dsh` 插件:npm 包名、GitHub 网页链接(含插件集合仓库里指向某个子包的 `…/tree/main/packages/xxx` 链接)、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并镜像进 `cordis.patch.yml` 中带标记的托管块。 |
+| **插件管理** | 在窗口里安装、更新、卸载 `dsh` 插件:npm 包名、GitHub 网页链接(含插件集合仓库里指向某个子包的 `…/tree/main/packages/xxx` 链接)、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。已装插件会在后台按 npm 配置的注册表(尊重镜像)查一次新版本,有则标出。插件可随时停用/启用而不必卸载——停用写的是 loader 条目上的 `disabled: true`(运行时自带的机制),而不是 profile 的 bundle 列表,因为那个列表会被 `dsh plugin` 每次操作时按已安装状态重新对账。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并与停用状态一起镜像进 `cordis.patch.yml` 中带标记的托管块。 |
 | **插件市场** | 独立窗口(菜单「插件 → 插件市场…」):读取 [DSH Market](https://dshplugin.market/) 的目录,可搜索、看星标与描述,一键安装。目录在本地缓存(6 小时内不再联网,可手动刷新),离线也能浏览。只有市场已核验、且从 npm 分发的条目提供一键安装;git 来源的条目只给出仓库链接,需要自行在「已安装」页手动安装。换源见[数据位置](#数据位置)中的 `marketCatalogUrl`。 |
 
 ## 从源码运行

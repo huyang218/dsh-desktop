@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld('dshPlugins', {
   pickZip: () => ipcRenderer.invoke('plugins:pick-zip'),
   /** Unpacks a plugin zip into the shell's plugin directory and installs it. */
   installZip: zipPath => ipcRenderer.invoke('plugins:install-zip', zipPath),
+  /** Switches an installed plugin off or back on, without uninstalling. */
+  setEnabled: (name, enabled) => ipcRenderer.invoke('plugins:set-enabled', name, enabled),
+  /** Which installed plugins have a newer version: { [name]: version }. */
+  checkUpdates: () => ipcRenderer.invoke('plugins:check-updates'),
   /** Removes an installed plugin by package name. */
   remove: name => ipcRenderer.invoke('plugins:remove', name),
   /** Updates an installed plugin to the newest published version. */

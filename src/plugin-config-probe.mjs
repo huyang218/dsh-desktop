@@ -13,9 +13,14 @@
  * out of the Electron main process and free of module-cache staleness after
  * reinstalls.
  *
- * argv: <profileDir> <runtimeDir> <packageName> [locale]
+ * argv: <profileDir> <runtimeDir> <packageName> [locale] [--row-only]
  * stdout: one JSON object { rowId, fields, error? }; always exits 0 so the
  * shell handles failures from the payload, not the exit code.
+ *
+ * `--row-only` answers with the row id alone and never imports the plugin.
+ * Disabling a plugin needs its row id, and the plugin most likely to be
+ * disabled is the one whose import throws — asking for the schema first
+ * would make the broken case the one that cannot be switched off.
  */
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -24,12 +29,14 @@ import { pathToFileURL } from 'node:url'
 
 async function main() {
   const [profileDir, runtimeDir, packageName, locale] = process.argv.slice(2)
+  const rowOnly = process.argv.includes('--row-only')
   const pkgDir = path.join(profileDir, 'node_modules', packageName)
   const pkg = JSON.parse(await readFile(path.join(pkgDir, 'package.json'), 'utf8'))
 
+  const rowId = await findBundleRowId(runtimeDir, pkgDir, pkg)
   return {
-    rowId: await findBundleRowId(runtimeDir, pkgDir, pkg),
-    fields: await extractConfigFields(pkgDir, pkg, locale),
+    rowId,
+    fields: rowOnly ? [] : await extractConfigFields(pkgDir, pkg, locale),
   }
 }
 

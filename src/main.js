@@ -26,8 +26,11 @@ import {
   compareVersions, downloadInstaller, fetchLatestRelease, fetchShellManifest, plan, stageShellUpdate,
 } from './app-update.js'
 import { DEFAULT_CATALOG_URL, loadCatalog } from './market.js'
-import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
+import {
+  getDisabledPlugins, getPluginConfigValues, probePluginConfig, setPluginConfig, setPluginDisabled,
+} from './plugin-config.js'
 import { normalizeSpec } from './plugin-spec.js'
+import { findPluginUpdates } from './plugin-updates.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
 import * as proxy from './proxy.js'
@@ -845,6 +848,7 @@ async function listPlugins() {
     return []
   }
   const bundles = manifest.dsh?.profile?.bundles ?? []
+  const disabled = new Set(await getDisabledPlugins(profileDir))
   const plugins = []
   for (const [name, spec] of Object.entries(manifest.dependencies ?? {})) {
     let version
@@ -854,7 +858,13 @@ async function listPlugins() {
       )
       version = pkg.version
     } catch { /* not installed yet: version stays undefined */ }
-    plugins.push({ name, spec: String(spec), version, active: bundles.includes(name) })
+    plugins.push({
+      name,
+      spec: String(spec),
+      version,
+      active: bundles.includes(name),
+      disabled: disabled.has(name),
+    })
   }
   return plugins
 }
@@ -963,6 +973,63 @@ function openMarketLink(url) {
   return shell.openExternal(parsed.toString())
 }
 
+/**
+ * Switches a plugin off, or back on, without uninstalling it.
+ *
+ * The switch is a `disabled: true` override on the plugin's loader row — the
+ * runtime's own mechanism, written into the same managed patch block as the
+ * config values. Not the profile's bundle list: `dsh plugin` rebuilds that
+ * from what is installed on every operation, so a plugin taken out of it
+ * would come back the next time anything else was installed.
+ *
+ * @param {string} name @param {boolean} enabled
+ */
+async function setPluginEnabled(name, enabled) {
+  const profileDir = pluginProfileDir()
+  // The row id only: this must work for the plugin whose code throws on
+  // import, which is exactly the one someone wants to switch off.
+  const probe = await probePluginConfig({
+    nodeBin: state.toolchain.nodeBin,
+    probePath: path.join(here, 'plugin-config-probe.mjs'),
+    profileDir,
+    runtimeDir: state.runtime.dir,
+    name,
+    env: childEnv(state.toolchain, { DSH_HOME: paths.dshHome }),
+    locale: getLocale(),
+    log: pluginsLog,
+    rowOnly: true,
+  })
+  if (probe.error) throw new Error(probe.error)
+  if (!probe.rowId) throw new Error(t('error.pluginNoRow', { name }))
+  await setPluginDisabled(profileDir, name, probe.rowId, !enabled)
+  pluginsLog(`${name} ${enabled ? 'enabled' : 'disabled'} (row ${probe.rowId})`)
+}
+
+/**
+ * The registry npm is configured to use.
+ *
+ * Read from npm rather than assumed, and remembered for the session: a
+ * mirror is the normal setup wherever the default registry is slow, and an
+ * update check against the wrong one reports nothing to update.
+ */
+async function npmRegistry() {
+  if (state.registry) return state.registry
+  state.registry = await new Promise(resolve => {
+    const child = spawn(
+      state.toolchain.nodeBin,
+      [state.toolchain.npmCli, 'config', 'get', 'registry'],
+      { env: childEnv(state.toolchain), stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
+    )
+    let out = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', chunk => { out += chunk })
+    child.on('error', () => resolve('https://registry.npmjs.org'))
+    child.on('exit', () => resolve(out.trim() || 'https://registry.npmjs.org'))
+  })
+  log(`npm registry: ${state.registry}`)
+  return state.registry
+}
+
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
@@ -987,6 +1054,17 @@ function registerPluginIpc() {
   ipcMain.handle('plugins:update', (_event, name) => withPluginLock(
     () => runDshPlugin(['update', '--latest', '--config.minimumReleaseAge=0', String(name)]),
   ))
+  ipcMain.handle('plugins:set-enabled', (_event, name, enabled) => withPluginLock(
+    () => setPluginEnabled(String(name), Boolean(enabled)),
+  ))
+  // Outside the plugin lock and never fatal: this is a background question
+  // about the registry, and its answer only adds a badge.
+  ipcMain.handle('plugins:check-updates', async () => findPluginUpdates({
+    plugins: await listPlugins(),
+    registry: await npmRegistry(),
+    fetchImpl: net.fetch,
+    log: pluginsLog,
+  }))
   ipcMain.handle('plugins:open-link', (_event, url) => openMarketLink(url))
   // Deliberately outside the plugin lock: reading the catalog changes
   // nothing, and it must stay available while an install is running.

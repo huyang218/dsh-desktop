@@ -13,6 +13,13 @@
  * (including `!!js` expressions the yaml lib cannot round-trip) stay
  * byte-identical outside the managed block. Entries inside the block are
  * JSON flow mappings, which are valid YAML.
+ *
+ * The same store and the same block also carry whether a plugin is switched
+ * off. `disabled: true` on a loader entry is the runtime's own mechanism —
+ * the profile patch template names it in as many words — and it belongs here
+ * rather than in the profile's bundle list, because `dsh plugin` reconciles
+ * that list against what is installed on every operation and would put back
+ * anything taken out of it.
  */
 import { spawn } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -38,10 +45,11 @@ const STORE_FILE = 'plugin-config.json'
  * spawned by its packaged path.
  * @returns {Promise<{rowId: string|null, fields: Array, error?: string}>}
  */
-export async function probePluginConfig({ nodeBin, probePath, profileDir, runtimeDir, name, env, log, locale }) {
+export async function probePluginConfig({ nodeBin, probePath, profileDir, runtimeDir, name, env, log, locale, rowOnly = false }) {
   const source = await readFile(probePath, 'utf8')
   return await new Promise(resolve => {
-    const child = spawn(nodeBin, ['--input-type=module', '-', profileDir, runtimeDir, name, locale], {
+    const argv = [profileDir, runtimeDir, name, locale, ...(rowOnly ? ['--row-only'] : [])]
+    const child = spawn(nodeBin, ['--input-type=module', '-', ...argv], {
       cwd: profileDir, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     })
     child.stdin.write(source)
@@ -89,28 +97,76 @@ export async function getPluginConfigValues(profileDir, name) {
   return store[name]?.values ?? {}
 }
 
+/** Package names currently switched off. @returns {Promise<string[]>} */
+export async function getDisabledPlugins(profileDir) {
+  const store = await readStore(profileDir)
+  return Object.entries(store).filter(([, entry]) => entry?.disabled).map(([name]) => name)
+}
+
+/**
+ * Switches a plugin off or back on without uninstalling it.
+ *
+ * @param {string} profileDir @param {string} name package name
+ * @param {string} rowId the loader row the plugin's bundle patch inserts
+ * @param {boolean} disabled
+ */
+export async function setPluginDisabled(profileDir, name, rowId, disabled) {
+  const store = await readStore(profileDir)
+  const entry = store[name] ?? {}
+  if (disabled) {
+    store[name] = { ...entry, rowId, disabled: true }
+  } else if (entry.values && Object.keys(entry.values).length > 0) {
+    // Re-enabling keeps configuration the user filled in earlier.
+    store[name] = { rowId: entry.rowId ?? rowId, values: entry.values }
+  } else {
+    delete store[name]
+  }
+  await writeStore(profileDir, store)
+}
+
 /**
  * Saves one plugin's config values and regenerates the managed patch block.
  * An empty `values` object removes the plugin's override entry.
  */
 export async function setPluginConfig(profileDir, name, rowId, values) {
   const store = await readStore(profileDir)
+  const disabled = store[name]?.disabled === true
   if (values && Object.keys(values).length > 0) {
-    store[name] = { rowId, values }
+    store[name] = { rowId, values, ...(disabled ? { disabled: true } : {}) }
+  } else if (disabled) {
+    // Clearing every value leaves the plugin switched off, not forgotten.
+    store[name] = { rowId, disabled: true }
   } else {
     delete store[name]
   }
+  await writeStore(profileDir, store)
+}
+
+/** Writes the store and regenerates the managed patch block from it. */
+async function writeStore(profileDir, store) {
   await writeFile(path.join(profileDir, STORE_FILE), JSON.stringify(store, null, 2) + '\n')
   await spliceManagedBlock(path.join(profileDir, 'cordis.patch.yml'), renderBlock(store))
 }
 
-/** The managed block: one id-targeted JSON-flow override entry per plugin. */
+/**
+ * The managed block: one id-targeted JSON-flow override entry per plugin.
+ *
+ * A plugin appears once, carrying whichever of the two overrides apply —
+ * both go into the same entry, because the runtime merges a patch key by key
+ * onto the row it names.
+ */
 function renderBlock(store) {
   const lines = [MARK_BEGIN]
   for (const [name, entry] of Object.entries(store)) {
-    if (!entry?.rowId || !entry.values || Object.keys(entry.values).length === 0) continue
+    if (!entry?.rowId) continue
+    const hasValues = entry.values && Object.keys(entry.values).length > 0
+    if (!hasValues && !entry.disabled) continue
     lines.push(`# ${name}`)
-    lines.push(`- ${JSON.stringify({ id: entry.rowId, config: entry.values })}`)
+    lines.push(`- ${JSON.stringify({
+      id: entry.rowId,
+      ...(hasValues ? { config: entry.values } : {}),
+      ...(entry.disabled ? { disabled: true } : {}),
+    })}`)
   }
   lines.push(MARK_END)
   return lines.join('\n')

@@ -121,7 +121,10 @@
   }
   .plugin:hover { border-color: var(--border-strong); }
   .plugin .name { grid-area: 1 / 1; font-weight: 600; }
-  .plugin .badge { grid-area: 1 / 2; }
+  /* A row can carry more than one badge — switched off and updatable are
+     independent facts — so they share one cell instead of one grid area,
+     which would stack them on top of each other. */
+  .plugin .badges { grid-area: 1 / 2; display: flex; gap: 5px; flex-wrap: wrap; }
   .plugin .meta {
     grid-area: 2 / 1 / auto / 4; color: var(--text-muted); font-size: 12px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -136,6 +139,7 @@
     background: var(--ok-bg); color: var(--ok-text); white-space: nowrap;
   }
   .badge.off { background: var(--idle-bg); color: var(--idle-text); }
+  .badge.new { background: var(--accent-soft); color: var(--accent); }
   .empty { color: var(--text-faint); padding: 28px; text-align: center; }
 
   /* Market entries: the same row shape as an installed plugin, with the
@@ -302,6 +306,7 @@
     const zipSupported = typeof dshPlugins.pickZip === 'function'
     if (!zipSupported) $('install-zip').style.display = 'none'
     const updateSupported = typeof dshPlugins.update === 'function'
+    const toggleSupported = typeof dshPlugins.setEnabled === 'function'
 
     // Which of the two plugin windows this is. One page serves both: the log,
     // the restart notice, the busy state and the config form are the same in
@@ -323,6 +328,8 @@
 
     /** The installed plugins, as of the last refresh; the market reads it too. */
     let installed = []
+    /** Package name → newer published version, filled in by a background check. */
+    let updates = {}
 
     async function refresh() {
       installed = await dshPlugins.list()
@@ -334,18 +341,34 @@
       for (const p of installed) {
         const row = document.createElement('div')
         row.className = 'plugin'
-        const badge = p.active
-          ? `<span class="badge">${t('plugins.badgeActive')}</span>`
-          : `<span class="badge off">${t('plugins.badgeInactive')}</span>`
+        // Three states, not two: switched off is not the same as never
+        // having been part of the profile's layer stack.
+        const badge = p.disabled
+          ? `<span class="badge off">${t('plugins.badgeDisabled')}</span>`
+          : p.active
+            ? `<span class="badge">${t('plugins.badgeActive')}</span>`
+            : `<span class="badge off">${t('plugins.badgeInactive')}</span>`
+        const newer = updates[p.name]
         // Only a registry dependency can be updated: a link:, file: or git
         // spec resolves to something the user, not npm, decides the version of.
         const updatable = updateSupported && !/^(?:link:|file:|github:|git\+|https?:|\.{0,2}\/)/.test(p.spec)
-        row.innerHTML = `<span class="name"></span>${badge}<span class="meta"></span><span class="actions">`
-          + (updatable ? `<button class="update small">${t('plugins.update')}</button>` : '')
+        row.innerHTML = `<span class="name"></span><span class="badges">${badge}`
+          + (newer ? `<span class="badge new">${t('plugins.updateAvailable', { version: newer })}</span>` : '')
+          + `</span><span class="meta"></span><span class="actions">`
+          + (updatable ? `<button class="update small${newer ? ' primary' : ''}">${t('plugins.update')}</button>` : '')
+          // Only a plugin that is part of the layer stack has a loader row to
+          // switch; a dependency-only package has nothing to turn off.
+          + (toggleSupported && (p.active || p.disabled)
+            ? `<button class="toggle small">${t(p.disabled ? 'plugins.enable' : 'plugins.disable')}</button>`
+            : '')
           + `<button class="settings small">${t('plugins.settings')}</button>`
           + `<button class="danger small">${t('plugins.remove')}</button></span>`
         row.querySelector('.name').textContent = p.name
         row.querySelector('.meta').textContent = `${p.version ?? '?'} · ${p.spec}`
+        row.querySelector('.toggle')?.addEventListener('click', () => run(
+          () => dshPlugins.setEnabled(p.name, p.disabled),
+          t(p.disabled ? 'plugins.enabling' : 'plugins.disabling', { name: p.name }),
+        ))
         row.querySelector('.update')?.addEventListener('click', () => run(() => dshPlugins.update(p.name), t('plugins.updating', { name: p.name })))
         row.querySelector('.settings').addEventListener('click', () => openConfig(p.name))
         row.querySelector('.danger').addEventListener('click', () => run(() => dshPlugins.remove(p.name), t('plugins.removing', { name: p.name })))
@@ -353,6 +376,24 @@
       }
       // An install or removal changes what the market should offer.
       if (isMarket && market) renderMarket()
+    }
+
+    /**
+     * Asks the registry which installed plugins have a newer version, then
+     * redraws. Deliberately after the list is already on screen and never
+     * awaited by it: this is a network round trip, and a plugin list that
+     * waits for the network is a plugin list that looks broken offline.
+     */
+    async function checkUpdates() {
+      if (!updateSupported || typeof dshPlugins.checkUpdates !== 'function') return
+      try {
+        const found = await dshPlugins.checkUpdates()
+        if (Object.keys(found).length === 0) return
+        updates = found
+        await refresh()
+      } catch (error) {
+        appendLog(`✘ ${t('plugins.updateCheckFailed', { message: error.message })}`)
+      }
     }
 
     async function run(op, label) {
@@ -668,7 +709,7 @@
 
     // The installed list is read in both windows: the market needs it to know
     // what is already installed, even though it never renders that list.
-    refresh()
+    refresh().then(() => { if (!isMarket) checkUpdates() })
     if (isMarket) loadMarket(false)
   </script>
 </body>
