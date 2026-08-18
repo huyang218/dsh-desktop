@@ -605,6 +605,12 @@ async function testProxy(setting) {
   }
 
   const npmStarted = Date.now()
+  if (!state.toolchain) {
+    // Reachable only when startup failed before resolving a toolchain; the
+    // window is still there, and an unanswered half is better than a crash.
+    results.push({ name: t('settings.testNpm'), ok: false, detail: t('settings.testUnavailable') })
+    return results
+  }
   try {
     await new Promise((resolve, reject) => {
       const child = spawn(

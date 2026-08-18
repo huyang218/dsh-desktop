@@ -22,8 +22,7 @@
  * Deliberately free of Electron imports; the caller injects fetch.
  */
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { activate, isCompatible, readManifest } from './shell-bundle.js'
 import { extractZip } from './zip.js'
@@ -139,7 +138,12 @@ export async function stageShellUpdate({ release, manifest, shellDir, fetchImpl 
   const asset = release.assets.find(candidate => candidate.name === manifest.asset)
   if (!asset) throw new Error(t('error.updateNoAsset', { name: manifest.asset }))
 
-  const staging = await mkdtemp(path.join(tmpdir(), 'dsh-shell-'))
+  // Staged beside the destination, never in the system temp directory:
+  // activating is a rename, and a rename across filesystems fails with EXDEV.
+  // A temp directory on another volume is ordinary on Windows (a redirected
+  // %TEMP%) and possible anywhere.
+  await mkdir(shellDir, { recursive: true })
+  const staging = await mkdtemp(path.join(shellDir, '.staging-'))
   try {
     const archive = path.join(staging, 'bundle.zip')
     const bytes = await download(asset.url, archive, { fetchImpl, onProgress, maxBytes: MAX_BUNDLE_BYTES })
@@ -155,7 +159,6 @@ export async function stageShellUpdate({ release, manifest, shellDir, fetchImpl 
     if (!staged || staged.version !== manifest.version) throw new Error(t('error.updateBadBundle'))
     await readFile(path.join(unpacked, 'src', 'main.js'), 'utf8')
 
-    await mkdir(shellDir, { recursive: true })
     const dir = activate(shellDir, manifest.version, unpacked)
     log?.(`shell ${manifest.version} staged at ${dir}`)
     return { version: manifest.version, dir }
@@ -182,6 +185,11 @@ export async function downloadInstaller({ release, dir, fetchImpl = fetch, onPro
   const asset = installerAsset(release)
   if (!asset) throw new Error(t('error.updateNoInstaller'))
   await mkdir(dir, { recursive: true })
+  // Each of these is a couple of hundred megabytes and is useless once it has
+  // been run; keeping the last one only is the most a download folder owes.
+  for (const stale of await readdir(dir).catch(() => [])) {
+    if (stale !== asset.name) await unlink(path.join(dir, stale)).catch(() => {})
+  }
   const file = path.join(dir, asset.name)
   await download(asset.url, file, { fetchImpl, onProgress })
   log?.(`downloaded ${asset.name} to ${dir}`)

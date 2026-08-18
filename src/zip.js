@@ -97,6 +97,25 @@ export async function extractZip(zipPath, destDir, options = {}) {
   return { files, skipped }
 }
 
+/**
+ * Names Windows cannot store as written.
+ *
+ * Three separate traps, and the middle one is the reason this check exists at
+ * all rather than being left to the filesystem to reject: a colon makes
+ * `writeFile` create an alternate data stream attached to another file — no
+ * error, no visible file, contents hidden. Reserved device names fail
+ * loudly, and a trailing dot or space is silently stripped, which turns two
+ * distinct entries into one that overwrites the other.
+ */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i
+const WINDOWS_ILLEGAL = /[<>:"|?*\x00-\x1f]/
+
+/** Checked only on Windows: elsewhere these are ordinary, legal filenames. */
+function windowsUnsafe(name) {
+  return name.split('/').some(segment => segment !== ''
+    && (WINDOWS_ILLEGAL.test(segment) || WINDOWS_RESERVED.test(segment) || /[ .]$/.test(segment)))
+}
+
 /** Entries this extractor has no business writing out. */
 function isSkippable(entry) {
   if (entry.isSymlink) return true
@@ -114,9 +133,13 @@ function safeJoin(destDir, name) {
   // Some archivers write backslash separators; they are path separators on
   // Windows and legal filename characters on POSIX, so normalising them is
   // the only reading that cannot smuggle a directory level past the check.
-  const target = path.resolve(root, name.replace(/\\/g, '/'))
+  const normalized = name.replace(/\\/g, '/')
+  const target = path.resolve(root, normalized)
   if (target !== root && !target.startsWith(root + path.sep)) {
     throw new Error(t('error.zipUnsafeEntry', { name }))
+  }
+  if (process.platform === 'win32' && windowsUnsafe(normalized)) {
+    throw new Error(t('error.zipWindowsName', { name }))
   }
   return target
 }

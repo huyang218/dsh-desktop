@@ -128,6 +128,8 @@ The installer is per-user and lets the user choose the install directory (`oneCl
 
 After installing, verify the three things listed under [Platform support](#platform-support) — above all that quitting the app leaves no orphaned `node` processes.
 
+A few Windows differences in the newer features, handled in the implementation: a hot update is unpacked inside the data directory and renamed into place rather than staged in the system temp directory, because a rename across drives fails with `EXDEV`; a plugin zip holding an entry name Windows cannot store safely is refused (a `:` would write into another file's alternate data stream, `CON`/`LPT1` and friends are device names, and a trailing dot or space is silently stripped); and Open at Login registers a per-user startup entry, with `openAsHidden` being macOS-only — on Windows the app's own Start in the Tray setting decides. An installer update downloads the `.exe`, which needs the app closed before it runs.
+
 ## Menu
 
 | Item | Effect |
