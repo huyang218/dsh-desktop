@@ -864,8 +864,10 @@ function openSettingsWindow() {
     width: 660,
     height: 680,
     title: t('window.settings'),
+    autoHideMenuBar: true,
     webPreferences: { preload: path.join(here, 'settings-preload.cjs') },
   })
+  if (process.platform !== 'darwin') win.removeMenu()
   win.loadFile(path.join(assets, 'settings.html'))
   win.on('closed', () => { state.settingsWindow = undefined })
   state.settingsWindow = win
@@ -1204,8 +1206,14 @@ function openPluginWindow(mode) {
     width: spec.width,
     height: spec.height,
     title: t(spec.title),
+    // Windows and Linux draw the application menu inside every window, and
+    // these windows are not the application: they have their own controls and
+    // a menu bar over them is a second, irrelevant one. macOS keeps its menu
+    // where it belongs, at the top of the screen.
+    autoHideMenuBar: true,
     webPreferences: { preload: path.join(here, 'plugins-preload.cjs') },
   })
+  if (process.platform !== 'darwin') win.removeMenu()
   // The mode is in the URL rather than a message sent after load, so the
   // first painted frame is already the right window.
   win.loadFile(path.join(assets, 'plugins.html'), { search: `mode=${mode}` })
