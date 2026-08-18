@@ -24,6 +24,7 @@ import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18
 import { resolveLocations, saveLocations } from './locations.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
+import { withAccessHint } from './permission.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
   installIntoSlot, latestVersion, readPointer, slotDir,
@@ -466,7 +467,7 @@ async function runDshPlugin(args) {
       // likeliest failure on a fresh machine, and "exit code 127" tells the
       // user nothing they can act on.
       if (code === 127 || /pnpm not found/i.test(tail)) return reject(new Error(t('error.pnpmMissing')))
-      reject(new Error(t('error.pluginExit', { code, tail: tail.slice(-400) })))
+      reject(new Error(withAccessHint(t('error.pluginExit', { code, tail: tail.slice(-400) }))))
     })
   })
 }

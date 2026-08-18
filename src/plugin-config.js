@@ -18,6 +18,7 @@ import { spawn } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { t } from './i18n.js'
+import { withAccessHint } from './permission.js'
 
 // These markers are a DATA FORMAT, not branding: they are written into the
 // user's cordis.patch.yml and located again by exact string match. Renaming
@@ -51,7 +52,7 @@ export async function probePluginConfig({ nodeBin, probePath, profileDir, runtim
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', chunk => { stdout += chunk })
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-1000) })
-    const fail = message => resolve({ rowId: null, fields: [], error: message })
+    const fail = message => resolve({ rowId: null, fields: [], error: withAccessHint(message) })
     const timer = setTimeout(() => { child.kill('SIGKILL'); fail(t('error.configProbeTimeout')) }, 15_000)
     child.on('error', error => { clearTimeout(timer); fail(String(error.message)) })
     child.on('exit', () => {
@@ -60,7 +61,11 @@ export async function probePluginConfig({ nodeBin, probePath, profileDir, runtim
       // print noise before it, so parse the last non-empty line.
       const lines = stdout.split('\n').filter(line => line.trim())
       try {
-        resolve(JSON.parse(lines[lines.length - 1]))
+        const result = JSON.parse(lines[lines.length - 1])
+        // The probe reports its own failures in the payload; a plugin living
+        // in a protected folder arrives here as a bare EPERM.
+        if (result?.error) result.error = withAccessHint(result.error)
+        resolve(result)
       } catch {
         log?.(`config probe for ${name} produced no JSON; stderr: ${stderr}`)
         fail(t('error.configProbeOutput', { name }))

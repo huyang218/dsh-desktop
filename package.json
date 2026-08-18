@@ -80,7 +80,13 @@
     "mac": {
       "identity": null,
       "icon": "assets/icon.icns",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
+        "NSDownloadsFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
+        "NSDesktopFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
+        "NSRemovableVolumesUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here."
+      }
     }
   }
 }

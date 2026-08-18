@@ -156,6 +156,7 @@ Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*
 - The local port is reachable by any process on the machine (`dsh` has no auth token yet). A random port narrows the window; it does not close it.
 - Conversations need `DEEPSEEK_API_KEY`, set either in the `dsh` web UI settings or in the environment before launch.
 - macOS builds are ad-hoc signed and not notarized: the first launch needs approval under System Settings → Privacy & Security.
+- macOS protected folders (Documents, Desktop, Downloads, external volumes) are walled off from the app: a plugin installed from a local path inside one of them fails to read with `EPERM`. The plugin manager appends what to do about it. The grant is bound to the code signature, and an ad-hoc signature changes with every reinstall, so it has to be given again after an update; installing from a zip puts the plugin in the app data directory and sidesteps the whole layer.
 
 ## Contributing
 
