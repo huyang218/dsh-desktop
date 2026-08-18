@@ -29,6 +29,28 @@ const NPM_TREE_FROM_BIN_DIR = isWindows
   ? ['node_modules', 'npm']
   : ['..', 'lib', 'node_modules', 'npm']
 
+/**
+ * Removes the copies that are not the wanted version, and shrugs when it
+ * cannot. A previous version's node.exe may still be running — Windows will
+ * refuse, and refusing is fine: the only cost is disk, and the alternative
+ * is failing a launch over a directory nobody needs.
+ */
+function discardOtherRuntimes(base, wanted, log) {
+  let entries
+  try {
+    entries = readdirSync(base, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (entry.name === wanted) continue
+    try {
+      rmSync(path.join(base, entry.name), { recursive: true, force: true })
+      log?.(`removed the superseded Node runtime ${entry.name}`)
+    } catch { /* in use, or someone else's; disk is the only cost */ }
+  }
+}
+
 /** Directories searched for the Node binary in addition to the inherited PATH. */
 function candidateDirs() {
   const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
@@ -108,17 +130,32 @@ export function findToolchain() {
 export function ensureBundledToolchain({ tarPath, versionFile, destBase, log }) {
   if (!existsSync(tarPath) || !existsSync(versionFile)) return undefined
   const wanted = readFileSync(versionFile, 'utf8').trim()
-  const dest = path.join(destBase, 'node-runtime')
+  // One directory per version, never a single one emptied and refilled.
+  // Windows refuses to delete a running executable, and node.exe in here is
+  // exactly what the dsh server runs — so an update that arrived while an
+  // older server was still alive used to fail with EPERM and take the whole
+  // launch down. A new version is now written beside the old one, which
+  // needs nothing deleted at all.
+  const base = path.join(destBase, 'node-runtime')
+  const dest = path.join(base, wanted)
   const marker = path.join(dest, 'VERSION')
   const current = existsSync(marker) ? readFileSync(marker, 'utf8').trim() : undefined
   if (current !== wanted) {
-    log?.(`deploying bundled Node runtime ${wanted} …`)
-    rmSync(dest, { recursive: true, force: true })
-    mkdirSync(dest, { recursive: true })
-    // `tar` by name, not /usr/bin/tar: Windows 10 1803+ ships bsdtar as
-    // System32\tar.exe, which handles this archive identically.
-    execFileSync('tar', ['-xzf', tarPath, '-C', dest])
+    try {
+      log?.(`deploying bundled Node runtime ${wanted} …`)
+      rmSync(dest, { recursive: true, force: true })
+      mkdirSync(dest, { recursive: true })
+      // `tar` by name, not /usr/bin/tar: Windows 10 1803+ ships bsdtar as
+      // System32\tar.exe, which handles this archive identically.
+      execFileSync('tar', ['-xzf', tarPath, '-C', dest])
+    } catch (error) {
+      // Not fatal on its own: the caller falls back to a Node found on the
+      // machine, which is a far better answer than an app that will not open.
+      log?.(`could not deploy the bundled Node runtime: ${error?.message ?? error}`)
+      return undefined
+    }
   }
+  discardOtherRuntimes(base, wanted, log)
   // The staged layout mirrors the platform's own Node install, so the same
   // relative lookups work here as in findToolchain().
   const nodeDir = isWindows ? dest : path.join(dest, 'bin')
