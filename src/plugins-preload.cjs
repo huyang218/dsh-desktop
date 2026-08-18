@@ -9,6 +9,10 @@ contextBridge.exposeInMainWorld('dshPlugins', {
   list: () => ipcRenderer.invoke('plugins:list'),
   /** Installs a plugin (npm name / github:spec / absolute local path). */
   install: spec => ipcRenderer.invoke('plugins:install', spec),
+  /** Opens a file picker for a plugin zip; resolves to a path or null. */
+  pickZip: () => ipcRenderer.invoke('plugins:pick-zip'),
+  /** Unpacks a plugin zip into the shell's plugin directory and installs it. */
+  installZip: zipPath => ipcRenderer.invoke('plugins:install-zip', zipPath),
   /** Removes an installed plugin by package name. */
   remove: name => ipcRenderer.invoke('plugins:remove', name),
   /** Restarts the dsh server so config changes take effect. */

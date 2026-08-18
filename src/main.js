@@ -23,6 +23,7 @@ import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
 import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
 import { resolveLocations, saveLocations } from './locations.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
+import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
   installIntoSlot, latestVersion, readPointer, slotDir,
@@ -67,6 +68,9 @@ function initPaths() {
   const userData = app.getPath('userData')
   paths.runtimeBase = path.join(userData, 'runtime')
   paths.dshHome = path.join(userData, 'dsh-home')
+  // Zip-installed plugins live here for good: the profile links to them by
+  // path, so this is part of the installation, not a scratch directory.
+  paths.pluginsDir = path.join(paths.dshHome, PLUGIN_DIR)
   // A migrated directory keeps its old dsh-shell.log beside this one; that
   // history is the user's, so it is left alone rather than renamed or removed.
   paths.logDir = locations.logDir
@@ -523,6 +527,33 @@ function pluginProfileDir() {
   return path.join(paths.dshHome, 'profiles', PLUGIN_PROFILE)
 }
 
+/** Asks for a plugin zip. @returns {Promise<string|null>} null when cancelled */
+async function pickPluginZip() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.pluginsWindow, {
+    title: t('dialog.pickPluginZip'),
+    filters: [{ name: 'Zip', extensions: ['zip'] }],
+    properties: ['openFile'],
+  })
+  return canceled ? null : (filePaths?.[0] ?? null)
+}
+
+/**
+ * Unpacks a plugin zip into the shell's plugin directory and installs it
+ * from there — the same local-path install the spec field accepts, with the
+ * unpacking done for the user.
+ *
+ * @param {string} zipPath
+ * @returns {Promise<string>} the installed package name
+ */
+async function installPluginZip(zipPath) {
+  const { name, version, dir } = await unpackPluginZip({
+    zipPath, pluginsDir: paths.pluginsDir, log: pluginsLog,
+  })
+  pluginsLog(`installing ${name}${version ? `@${version}` : ''} from ${dir}`)
+  await runDshPlugin(['add', dir])
+  return name
+}
+
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
@@ -531,6 +562,8 @@ function registerPluginIpc() {
   })
   ipcMain.handle('plugins:list', () => listPlugins())
   ipcMain.handle('plugins:install', (_event, spec) => withPluginLock(() => runDshPlugin(['add', String(spec)])))
+  ipcMain.handle('plugins:pick-zip', () => pickPluginZip())
+  ipcMain.handle('plugins:install-zip', (_event, zipPath) => withPluginLock(() => installPluginZip(String(zipPath))))
   ipcMain.handle('plugins:remove', (_event, name) => withPluginLock(() => runDshPlugin(['remove', String(name)])))
   ipcMain.handle('plugins:restart', () => restartServer())
   ipcMain.handle('plugins:config-schema', (_event, name) => probePluginConfig({

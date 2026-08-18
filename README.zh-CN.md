@@ -27,7 +27,7 @@
 | **启动可恢复** | 服务未在就绪时限内应答时提供重试,而不是直接结束应用:磁盘繁忙时它通常只是慢,并没有坏。 |
 | **存储** | `DSH_HOME` 指向应用数据目录内部,profiles、会话与设置全部归应用管理。菜单可直接打开数据目录与日志。 |
 | **内置工具链** | 打包版自带 Node 运行时,目标机器无需预装任何东西。源码运行时回退为在本机查找 Node ≥ 22(PATH、nvm、Homebrew、`%ProgramFiles%`),这也顺带绕开了 GUI 应用不继承 shell `PATH` 的问题。 |
-| **插件管理** | 在窗口里安装、卸载 `dsh` 插件。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并镜像进 `cordis.patch.yml` 中带标记的托管块。 |
+| **插件管理** | 在窗口里安装、卸载 `dsh` 插件:npm 包名、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并镜像进 `cordis.patch.yml` 中带标记的托管块。 |
 
 ## 从源码运行
 

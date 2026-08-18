@@ -28,7 +28,7 @@ The repository is named `dsh-desktop`; the packaged application is named **DeepS
 | **Recoverable start** | A server that misses the readiness deadline offers a retry rather than killing the app: on a busy disk it is usually just slow, not broken. |
 | **Storage** | `DSH_HOME` points inside the app's data directory, so profiles, sessions and settings are all owned by the app. The menu opens the data directory and the log directly. |
 | **Bundled toolchain** | Packaged builds carry their own Node runtime, so a target machine needs nothing preinstalled. Running from source falls back to finding Node ≥ 22 on the machine (PATH, nvm, Homebrew, `%ProgramFiles%`), which also sidesteps GUI apps not inheriting a shell `PATH`. |
-| **Plugin manager** | Install and remove `dsh` plugins from a window. A plugin that exports a config schema gets a generated form; values are written to the profile's `plugin-config.json` and mirrored into a marked block in `cordis.patch.yml`. |
+| **Plugin manager** | Install and remove `dsh` plugins from a window: by npm name, `github:` spec, absolute local path, or a zip package — a zip is unpacked into `<data dir>/dsh-home/plugins/<package name>` and installed from there as a local path. A plugin that exports a config schema gets a generated form; values are written to the profile's `plugin-config.json` and mirrored into a marked block in `cordis.patch.yml`. |
 
 ## Running from source
 

@@ -189,6 +189,7 @@
   <div class="row">
     <input id="spec" data-i18n-placeholder="plugins.specPlaceholder" spellcheck="false">
     <button class="primary" id="install" data-i18n="plugins.install"></button>
+    <button id="install-zip" data-i18n="plugins.installZip"></button>
   </div>
   <div class="hint" data-i18n="plugins.hint"></div>
   <div id="restart-bar">
@@ -245,6 +246,10 @@
     // against a shell that predates them means the app needs a real relaunch
     // (tray → Quit), not just a server restart.
     const configSupported = typeof dshPlugins.configSchema === 'function'
+    // Same story for the zip channels: an app that predates them keeps the
+    // spec field working rather than offering a button that cannot answer.
+    const zipSupported = typeof dshPlugins.pickZip === 'function'
+    if (!zipSupported) $('install-zip').style.display = 'none'
 
     function setBusy(value) {
       busy = value
@@ -411,13 +416,15 @@
       await run(() => dshPlugins.configSet(name, rowId, values), t('plugins.saveConfig', { name }))
     })
 
-    $('install').addEventListener('click', async () => {
-      const spec = $('spec').value.trim()
-      if (!spec) return
+    /**
+     * Runs an install and, if it brought in exactly one new package with
+     * configuration, opens its form right away. Shared by both install
+     * routes: a plugin from a zip is as configurable as one from npm.
+     */
+    async function install(op, label) {
       const before = new Set((await dshPlugins.list()).map(p => p.name))
-      await run(() => dshPlugins.install(spec), t('plugins.installing', { spec }))
+      await run(op, label)
       if (!configSupported) return
-      // A newly appeared package with config fields gets its form right away.
       try {
         const added = (await dshPlugins.list()).filter(p => !before.has(p.name))
         if (added.length === 1) {
@@ -430,6 +437,21 @@
       } catch (error) {
         appendLog(`✘ ${t('plugins.newConfigFailed', { message: error.message })}`)
       }
+    }
+
+    $('install').addEventListener('click', async () => {
+      const spec = $('spec').value.trim()
+      if (!spec) return
+      await install(() => dshPlugins.install(spec), t('plugins.installing', { spec }))
+    })
+    $('install-zip').addEventListener('click', async () => {
+      if (busy) return
+      // The picker is opened by the main process, so the path never has to be
+      // typed and the renderer only ever sees a file the user chose.
+      const zipPath = await dshPlugins.pickZip()
+      if (!zipPath) return
+      const file = zipPath.split(/[\\/]/).pop()
+      await install(() => dshPlugins.installZip(zipPath), t('plugins.installingZip', { file }))
     })
     $('spec').addEventListener('keydown', e => { if (e.key === 'Enter') $('install').click() })
     $('restart').addEventListener('click', async () => {
