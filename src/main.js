@@ -12,7 +12,7 @@
  * tray icon and the Dock bring it back. Quitting (tray menu or Cmd+Q) stops
  * the server process group before exit.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, screen, session, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -31,9 +31,10 @@ import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
 import * as proxy from './proxy.js'
 import { confirmBundle, shellDirOf } from './shell-bundle.js'
+import { visibleBounds } from './window-state.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
-  installIntoSlot, latestVersion, readPointer, slotDir,
+  installedVersion, installIntoSlot, latestVersion, readPointer, slotDir,
 } from './runtime.js'
 import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 
@@ -421,6 +422,8 @@ async function updateRuntime() {
     await activateSlot(paths.runtimeBase, { slot: target, version })
     state.runtime = { slot: target, dir, version }
     log(`activated ${version} in ${target}`)
+    // The slot just left behind is now the way back.
+    await refreshRollbackTarget()
     setUpdatePhase(null)
 
     const { response } = await dialog.showMessageBox(state.window, {
@@ -437,6 +440,111 @@ async function updateRuntime() {
     setUpdatePhase(null)
     state.updating = false
   }
+}
+
+/**
+ * The version sitting in the other slot, when it is a complete install.
+ *
+ * Dual-slot updates leave the previous runtime where it was, so the way back
+ * from a bad one is already on disk — it just had no way to be chosen. This
+ * is read once at startup and after anything that moves the pointer, because
+ * a menu is built synchronously and cannot go and look.
+ */
+async function refreshRollbackTarget() {
+  try {
+    const pointer = await readPointer(paths.runtimeBase)
+    // No pointer means no active slot to go back FROM: inactiveSlot() would
+    // name slot-a, which in that state is as likely to be the one running.
+    const slot = pointer ? inactiveSlot(pointer.slot) : undefined
+    const version = slot ? await installedVersion(slotDir(paths.runtimeBase, slot)) : undefined
+    // The same version in both slots is a reinstall, not a way back.
+    state.rollback = version && version !== pointer.version ? { slot, version } : undefined
+  } catch {
+    state.rollback = undefined
+  }
+  buildMenu()
+  if (state.tray && !state.tray.isDestroyed()) state.tray.setContextMenu(trayMenu())
+}
+
+/**
+ * Switches back to the runtime in the other slot.
+ *
+ * No boot test, unlike an update: this version was running on this machine
+ * before, and the point of a way back is that it is quick. A restart that
+ * fails lands in the same supervision an ordinary one does, and the pointer
+ * can be moved again.
+ */
+async function rollbackRuntime() {
+  const target = state.rollback
+  if (!target) return
+  const { response } = await dialog.showMessageBox(state.window, {
+    type: 'question',
+    message: t('dialog.rollbackConfirm', { version: target.version }),
+    detail: t('dialog.rollbackDetail', { current: state.runtime?.version ?? '' }),
+    buttons: [t('button.rollback'), t('button.cancel')],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (response !== 0) return
+  await activateSlot(paths.runtimeBase, { slot: target.slot, version: target.version })
+  state.runtime = { slot: target.slot, dir: slotDir(paths.runtimeBase, target.slot), version: target.version }
+  log(`rolled back to ${target.version} in ${target.slot}`)
+  await refreshRollbackTarget()
+  await restartServer()
+}
+
+// ── Living in the background ────────────────────────────────────────────────
+// This app is a service with a window, not a document editor: it is opened
+// once and left running. Three settings follow from that — start with the
+// machine, start out of the way, and come back the size it was.
+
+/**
+ * The window rectangle to restore, if it still lands on a screen.
+ *
+ * A saved rectangle can name a monitor that has since been unplugged, and a
+ * window restored onto it is invisible with no way to fetch it back. So the
+ * bounds are only honoured while they still overlap a display's work area;
+ * otherwise the window opens where a new one would.
+ */
+function savedBounds() {
+  return visibleBounds(readSettings().windowBounds, screen.getAllDisplays().map(display => display.workArea))
+}
+
+/**
+ * Records the window's size and position as the user leaves them.
+ *
+ * Debounced because resizing fires continuously, and reading the normal
+ * bounds rather than the current ones so that quitting while maximised
+ * restores a maximised window over its old size rather than a full-screen
+ * rectangle that cannot be un-maximised back to anything.
+ */
+function rememberBounds(window) {
+  let timer
+  const save = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      if (window.isDestroyed() || window.isMinimized()) return
+      writeSettings({ windowBounds: window.getNormalBounds(), windowMaximized: window.isMaximized() })
+    }, 500)
+  }
+  for (const event of ['resize', 'move', 'maximize', 'unmaximize']) window.on(event, save)
+}
+
+/** Whether the app is registered to start with the machine. */
+function opensAtLogin() {
+  try {
+    return app.getLoginItemSettings().openAtLogin
+  } catch {
+    // Not every platform has login items; not having one is the answer.
+    return false
+  }
+}
+
+function setOpensAtLogin(enabled) {
+  // `openAsHidden` is macOS-only and covers only the login case; the app's
+  // own startHidden setting is what actually decides, so both paths agree.
+  app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: readSettings().startHidden === true })
+  log(`open at login: ${enabled}`)
 }
 
 // ── Proxy ───────────────────────────────────────────────────────────────────
@@ -895,6 +1003,11 @@ function registerPluginIpc() {
   ))
 }
 
+/** The tray menu is rebuilt whenever a menu item's state changes. */
+function refreshTrayMenu() {
+  if (state.tray && !state.tray.isDestroyed()) state.tray.setContextMenu(trayMenu())
+}
+
 /** Shared between the application menu and the tray context menu. */
 function languageItems() {
   return LOCALES.map(({ id, label }) => ({
@@ -930,6 +1043,25 @@ function actionItems() {
         { label: t('menu.language'), submenu: languageItems() },
         { label: t('menu.proxy'), click: openSettingsWindow },
         { type: 'separator' },
+        // Checkmarks in the label rather than `type: 'checkbox'`, for the
+        // reason spelled out in languageItems(): Electron fires a checked
+        // item's handler while it synchronises state as the menu opens.
+        {
+          label: `${opensAtLogin() ? '\u2713' : '\u2007\u2007'} ${t('menu.openAtLogin')}`,
+          click: () => { setOpensAtLogin(!opensAtLogin()); buildMenu(); refreshTrayMenu() },
+        },
+        {
+          label: `${readSettings().startHidden ? '\u2713' : '\u2007\u2007'} ${t('menu.startHidden')}`,
+          click: () => {
+            const next = !readSettings().startHidden
+            writeSettings({ startHidden: next })
+            // Keep the login item's own hidden flag in step on macOS.
+            if (opensAtLogin()) setOpensAtLogin(true)
+            buildMenu()
+            refreshTrayMenu()
+          },
+        },
+        { type: 'separator' },
         { label: t('menu.dataDir'), click: () => chooseDataDir().catch(e => errorDialog(t('dialog.settingFailed'), e)) },
         { label: t('menu.logDir'), click: () => chooseLogDir().catch(e => errorDialog(t('dialog.settingFailed'), e)) },
       ],
@@ -941,6 +1073,12 @@ function actionItems() {
     state.update
       ? { label: t('menu.updating'), enabled: false }
       : { label: t('menu.checkUpdate'), click: () => updateRuntime().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
+    ...(state.rollback
+      ? [{
+        label: t('menu.rollback', { version: state.rollback.version }),
+        click: () => rollbackRuntime().catch(e => errorDialog(t('dialog.rollbackFailed'), e)),
+      }]
+      : []),
     { label: t('menu.restartService'), click: () => restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e)) },
     { type: 'separator' },
     { label: t('menu.openDataDir'), click: () => shell.openPath(app.getPath('userData')) },
@@ -1081,12 +1219,20 @@ async function main() {
   // runtime install on a first launch is exactly the thing a user behind a
   // proxy needs this for.
   await applyProxy(proxySetting()).catch(error => log(`could not apply the proxy setting: ${error?.message ?? error}`))
+  const settings = readSettings()
+  const bounds = savedBounds()
   const window = new BrowserWindow({
     width: 1280,
     height: 840,
+    ...bounds,
     title: 'DeepSeek Harness',
+    // Starting hidden means starting in the tray: the server comes up, the
+    // window is built and loaded, and nothing appears until it is asked for.
+    show: !settings.startHidden,
     webPreferences: { nodeIntegration: false, contextIsolation: true },
   })
+  if (settings.windowMaximized) window.maximize()
+  rememberBounds(window)
   state.window = window
   // Close hides; the server keeps running until the app itself quits.
   window.on('close', event => {
@@ -1117,6 +1263,7 @@ async function main() {
     })
     buildMenu()
     createTray()
+    await refreshRollbackTarget()
   } catch (error) {
     // Environment problems (no usable Node, a runtime that will not deploy)
     // are not something another attempt fixes.

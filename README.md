@@ -22,11 +22,12 @@ The repository is named `dsh-desktop`; the packaged application is named **DeepS
 
 | | |
 |---|---|
-| **Dual-slot updates** | The runtime is installed by npm into `runtime/slot-a` or `slot-b`, with `current.json` naming the active one. An update installs into the idle slot, boots a probe server against it, and only moves the pointer once that self-test passes — a failed upgrade leaves the working version untouched. |
+| **Dual-slot updates** | The runtime is installed by npm into `runtime/slot-a` or `slot-b`, with `current.json` naming the active one. An update installs into the idle slot, boots a probe server against it, and only moves the pointer once that self-test passes — a failed upgrade leaves the working version untouched. The previous version stays in the other slot, and one menu item goes back to it — no network, no reinstall. |
 | **App self-update** | The version here against the newest GitHub release, in two flavours. A **hot update**, when the new version only changes the shell (JavaScript and markup): a few hundred KB into the data directory, live after a restart, with the installed app bundle untouched — so its signature, and the privacy permissions macOS binds to it, survive. An **installer update**, when Electron or the bundled runtime changed: the app downloads the installer and hands it to you. Checked once, quietly, after startup, and from the menu whenever you like. |
 | **Process ownership** | The server starts with the window on a random free port and loads once it answers HTTP 200. It runs in its own process group (POSIX) or job tree (Windows), and the whole tree is terminated when the app quits — no orphans. |
 | **Supervision** | An unplanned exit — including an OOM abort, which arrives as a signal rather than an exit code — is restarted automatically, backing off 1s/3s/8s. Three consecutive failures raise a dialog instead of spinning. A server that stays up for a minute earns a fresh budget, so an occasional crash always gets the full three attempts. |
 | **Recoverable start** | A server that misses the readiness deadline offers a retry rather than killing the app: on a busy disk it is usually just slow, not broken. |
+| **Living in the background** | It is a service that happens to have a window: it can open at login, start straight into the tray without a window, and it remembers the window's size and position (a saved rectangle on a monitor that has since been unplugged is discarded, rather than opening the window where it cannot be seen). |
 | **Storage** | `DSH_HOME` points inside the app's data directory, so profiles, sessions and settings are all owned by the app. The menu opens the data directory and the log directly. |
 | **Proxy setting** | The app has two unrelated networks: its own requests go through Chromium, while npm (the runtime), pnpm (plugins) and the `dsh` server that calls the model API read proxy variables from their environment. A GUI app launched from Finder or the Start menu gets neither — the proxy exported in a shell profile is invisible to it, and the system-wide setting is often switched off. Settings → Proxy… configures both at once, and tests each separately. |
 | **Bundled toolchain** | Packaged builds carry their own Node runtime, so a target machine needs nothing preinstalled. Running from source falls back to finding Node ≥ 22 on the machine (PATH, nvm, Homebrew, `%ProgramFiles%`), which also sidesteps GUI apps not inheriting a shell `PATH`. |
@@ -136,6 +137,8 @@ After installing, verify the three things listed under [Platform support](#platf
 | Settings → Proxy… | Network proxy, applied to the app's own requests and to every child process |
 | Check for App Updates | Against the newest release; hot-updates when it can, downloads the installer when it cannot |
 | Check for Runtime Updates | Dual-slot `dsh` runtime update, with a restart prompt after the self-test passes |
+| Roll Back to dsh &lt;version&gt; | Switch to the previous version still sitting in the other slot; absent when that slot is empty or holds the same version |
+| Settings → Open at Login / Start in the Tray | The two background-residency switches |
 | Restart service | Stops the current server tree and starts the same version again |
 | Open data directory / Open log | |
 
@@ -164,6 +167,8 @@ Optional keys in `settings.json`:
 | Key | Effect |
 |---|---|
 | `locale` | UI language; written when it is switched from the menu |
+| `startHidden` | Start into the tray without showing a window |
+| `windowBounds` / `windowMaximized` | Window size, position and maximized state, remembered as you leave them |
 | `proxy` | `{ mode, url, bypass }`, where `mode` is `system` (default), `direct` or `manual`. Edited under Settings → Proxy…; `localhost`, `127.0.0.1` and `::1` are always direct and need no `bypass` entry. |
 | `marketCatalogUrl` | Plugin market catalog, `https://dshplugin.market/plugins.json` by default. Point it at your own or another list (for instance `https://awesome-dsh-plugin.com/plugins.json`) and hit Refresh in the market tab. |
 
