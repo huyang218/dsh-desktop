@@ -118,6 +118,10 @@ jobs:
       # `gh` is preinstalled on every runner, so no third-party action takes
       # part in publishing. Creating the release is idempotent: three jobs
       # race for it and only the first one wins, which is the intent.
+      #
+      # electron-builder does its own publishing when it detects CI, which is
+      # why the dist scripts pass `--publish never`: releases are made here,
+      # from artifacts that already exist, not as a side effect of a build.
       - name: Publish to the release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash

@@ -29,11 +29,11 @@
     "start": "electron .",
     "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
     "predist": "npm run seed",
-    "dist": "electron-builder --dir",
+    "dist": "electron-builder --dir --publish never",
     "predist:mac": "npm run seed",
-    "dist:mac": "electron-builder --mac dmg",
+    "dist:mac": "electron-builder --mac dmg --publish never",
     "predist:win": "npm run seed",
-    "dist:win": "electron-builder --win nsis"
+    "dist:win": "electron-builder --win nsis --publish never"
   },
   "devDependencies": {
     "electron": "^38.0.0",
