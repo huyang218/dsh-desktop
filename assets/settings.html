@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+
+  /* Tokens first, so the two colour schemes differ only in values. The dsh
+     web UI follows the system, and a plugin window nailed to dark would look
+     like a different application docked inside this one. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f8;
+    --surface: #ffffff;
+    --surface-2: #f0f0f3;
+    --sunken: #fafafb;
+    --border: #e0e0e6;
+    --border-strong: #cfcfd8;
+    --text: #1c1c22;
+    --text-muted: #6b6b78;
+    --text-faint: #90909c;
+    --accent: #3b62d9;
+    --accent-text: #ffffff;
+    --accent-soft: #eaf0ff;
+    --ok-bg: #e6f6ec; --ok-text: #1c7a45;
+    --idle-bg: #f3eee4; --idle-text: #8a6a2f;
+    --warn-bg: #fdf6e3; --warn-border: #ecdcb0; --warn-text: #7a5c17;
+    --danger: #c0392b;
+    --shadow: 0 1px 2px rgba(20, 20, 32, 0.06), 0 8px 24px rgba(20, 20, 32, 0.08);
+    --radius: 9px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131317;
+      --surface: #1b1b21;
+      --surface-2: #24242b;
+      --sunken: #101014;
+      --border: #2a2a33;
+      --border-strong: #3a3a45;
+      --text: #e9e9ef;
+      --text-muted: #9a9aa6;
+      --text-faint: #6f6f7b;
+      --accent: #5b7cf0;
+      --accent-text: #ffffff;
+      --accent-soft: #222a44;
+      --ok-bg: #16301f; --ok-text: #74cf95;
+      --idle-bg: #2e2519; --idle-text: #d3a76c;
+      --warn-bg: #2b2418; --warn-border: #4d3d1e; --warn-text: #e6c987;
+      --danger: #e06a5c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.45);
+    }
+  }
+
+  html, body { height: 100%; margin: 0; }
+  body {
+    /* Settings grow as they are added; the window scrolls rather than
+       clipping whatever ended up at the bottom. */
+    display: flex; flex-direction: column; gap: 14px; overflow-y: auto;
+    box-sizing: border-box; padding: 18px 20px;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: var(--accent-text); }
+
+  /* Header */
+  header { display: flex; align-items: baseline; gap: 9px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  .chip {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border);
+  }
+  .hint { color: var(--text-muted); font-size: 12px; }
+
+  /* Install row */
+  .row { display: flex; gap: 8px; }
+  input, button, select, textarea { font: inherit; }
+  input {
+    flex: 1; padding: 9px 11px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); background: var(--surface);
+    color: var(--text); outline: none; transition: border-color .12s, box-shadow .12s;
+  }
+  input::placeholder { color: var(--text-faint); }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  button {
+    appearance: none; cursor: pointer; white-space: nowrap;
+    padding: 9px 15px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    transition: background .12s, border-color .12s, color .12s, transform .06s;
+  }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 550; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+  button.small { padding: 6px 11px; font-size: 12px; }
+  button.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--surface); }
+
+
+  /* Settings are a form, not a list: a section per topic, each with its own
+     explanation, because a proxy setting that is wrong looks exactly like a
+     network that is down. */
+  .section {
+    display: flex; flex-direction: column; gap: 12px;
+    padding: 16px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .section h2 { margin: 0; font-size: 13px; font-weight: 650; }
+  .modes { display: flex; flex-direction: column; gap: 8px; }
+  .mode { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; }
+  .mode input { width: 15px; height: 15px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+  .mode .label { font-weight: 550; }
+  .mode .desc { color: var(--text-muted); font-size: 12px; }
+  .fields { display: flex; flex-direction: column; gap: 10px; padding-left: 24px; }
+  .fields[hidden] { display: none; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 12px; font-weight: 550; }
+  .field .desc { font-size: 11px; color: var(--text-muted); }
+  .field input { flex: none; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .actions { display: flex; gap: 8px; align-items: center; }
+  .actions .spacer { flex: 1; }
+  #result {
+    margin: 0; padding: 10px 12px; white-space: pre-wrap; min-height: 20px;
+    background: var(--sunken); border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text-muted); font: 11px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .hint code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+</head>
+<body>
+  <header><h1 id="heading"></h1></header>
+  <div class="section">
+    <h2 data-i18n="settings.proxyTitle"></h2>
+    <div class="hint" data-i18n="settings.proxyIntro"></div>
+    <div class="modes" id="modes"></div>
+    <div class="fields" id="manual-fields">
+      <div class="field">
+        <label for="url" data-i18n="settings.proxyUrl"></label>
+        <input id="url" spellcheck="false" placeholder="http://127.0.0.1:7899">
+        <div class="desc" data-i18n="settings.proxyUrlHint"></div>
+      </div>
+      <div class="field">
+        <label for="bypass" data-i18n="settings.proxyBypass"></label>
+        <input id="bypass" spellcheck="false" placeholder="*.internal, 10.0.0.0/8">
+        <div class="desc" id="bypass-hint"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="test" data-i18n="settings.test"></button>
+      <span class="spacer"></span>
+      <button class="primary" id="save" data-i18n="settings.save"></button>
+    </div>
+    <pre id="result"></pre>
+  </div>
+  <script type="module">
+    const $ = id => document.getElementById(id)
+    const { locale, messages } = dshSettings.i18n
+    const t = (key, params) => {
+      const template = messages[key] ?? key
+      return params
+        ? template.replace(/\{(\w+)\}/g, (whole, name) => (
+          Object.hasOwn(params, name) ? String(params[name]) : whole))
+        : template
+    }
+    document.documentElement.lang = locale
+    document.title = t('window.settings')
+    $('heading').textContent = t('window.settings')
+    for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n)
+
+    const MODES = ['system', 'direct', 'manual']
+    for (const mode of MODES) {
+      const row = document.createElement('label')
+      row.className = 'mode'
+      row.innerHTML = '<input type="radio" name="mode"><span><span class="label"></span><br><span class="desc"></span></span>'
+      const input = row.querySelector('input')
+      input.value = mode
+      row.querySelector('.label').textContent = t(`settings.mode.${mode}`)
+      row.querySelector('.desc').textContent = t(`settings.mode.${mode}Hint`)
+      input.addEventListener('change', syncMode)
+      $('modes').appendChild(row)
+    }
+    const selected = () => document.querySelector('input[name="mode"]:checked')?.value ?? 'system'
+    const current = () => ({ mode: selected(), url: $('url').value.trim(), bypass: $('bypass').value.trim() })
+    function syncMode() {
+      $('manual-fields').hidden = selected() !== 'manual'
+    }
+
+    function report(lines) {
+      $('result').textContent = lines.join('\n')
+    }
+    function setBusy(value) {
+      for (const b of document.querySelectorAll('button')) b.disabled = value
+    }
+
+    $('test').addEventListener('click', async () => {
+      setBusy(true)
+      report([t('settings.testing')])
+      try {
+        const results = await dshSettings.testProxy(current())
+        report(results.map(r => `${r.ok ? '✔' : '✘'} ${r.name}: ${r.detail}`))
+      } catch (error) {
+        report([`✘ ${error.message}`])
+      } finally {
+        setBusy(false)
+      }
+    })
+
+    $('save').addEventListener('click', async () => {
+      setBusy(true)
+      try {
+        const outcome = await dshSettings.setProxy(current())
+        report([outcome?.ok === false ? `✘ ${outcome.message}` : `✔ ${t('settings.saved')}`])
+      } catch (error) {
+        report([`✘ ${error.message}`])
+      } finally {
+        setBusy(false)
+      }
+    })
+
+    const stored = await dshSettings.getProxy()
+    for (const input of document.querySelectorAll('input[name="mode"]')) {
+      input.checked = input.value === stored.proxy.mode
+    }
+    $('url').value = stored.proxy.url || stored.fromEnv
+    $('bypass').value = stored.proxy.bypass
+    $('bypass-hint').textContent = t('settings.proxyBypassHint', { always: stored.alwaysDirect.join(', ') })
+    if (stored.fromEnv && !stored.proxy.url) report([t('settings.detected', { url: stored.fromEnv })])
+    syncMode()
+  </script>
+</body>
+</html>

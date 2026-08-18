@@ -12,7 +12,7 @@
  * tray icon and the Dock bring it back. Quitting (tray menu or Cmd+Q) stops
  * the server process group before exit.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, session, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -29,6 +29,7 @@ import { DEFAULT_CATALOG_URL, loadCatalog } from './market.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
+import * as proxy from './proxy.js'
 import { confirmBundle, shellDirOf } from './shell-bundle.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
@@ -134,6 +135,7 @@ function applyLocale(id) {
     paintTray()
   }
   for (const win of pluginWindows()) win.reload()
+  if (state.settingsWindow && !state.settingsWindow.isDestroyed()) state.settingsWindow.reload()
   if (state.window && !state.window.isDestroyed() && !state.port) {
     // Still on the loading page: reload it so its two strings switch too.
     state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
@@ -435,6 +437,132 @@ async function updateRuntime() {
     setUpdatePhase(null)
     state.updating = false
   }
+}
+
+// ── Proxy ───────────────────────────────────────────────────────────────────
+// The app has two networks: Chromium's, which the market and the update check
+// use, and the environment every child process inherits — npm installing the
+// runtime, pnpm installing plugins, and the dsh server calling the model API.
+// One setting configures both, because a user has one proxy.
+
+/** The stored setting, defaulted. */
+function proxySetting() {
+  return proxy.normalize(readSettings().proxy)
+}
+
+/**
+ * Applies a proxy setting to both networks.
+ *
+ * The environment is set on this process, which is what makes it reach the
+ * children: childEnv() builds every child's environment from process.env.
+ * Children already running keep what they started with — the dsh server has
+ * to be restarted to pick up a change, which the settings window says.
+ *
+ * @param {ReturnType<typeof proxySetting>} setting
+ */
+async function applyProxy(setting) {
+  proxy.applyToEnv(setting)
+  await session.defaultSession.setProxy(proxy.sessionConfig(setting))
+  log(`proxy: ${proxy.describe(setting)}`)
+}
+
+/**
+ * Tries both networks with a setting, without storing it.
+ *
+ * Both are tried because they fail independently and for different reasons,
+ * and "the market loads but plugins will not install" is exactly the
+ * confusion this reports its way out of. Chromium is exercised through a
+ * throwaway session so the running one is not reconfigured by a test; npm is
+ * exercised by running it, which is the only honest test of a path that
+ * belongs to npm.
+ *
+ * @returns {Promise<Array<{name: string, ok: boolean, detail: string}>>}
+ */
+async function testProxy(setting) {
+  const results = []
+  const started = Date.now()
+  const probe = session.fromPartition(`proxy-test-${Date.now()}`)
+  try {
+    await probe.setProxy(proxy.sessionConfig(setting))
+    const response = await probe.fetch('https://api.github.com/zen', {
+      signal: AbortSignal.timeout(15_000),
+    })
+    results.push({
+      name: t('settings.testApp'),
+      ok: response.ok,
+      detail: response.ok ? t('settings.testOk', { ms: Date.now() - started }) : `HTTP ${response.status}`,
+    })
+  } catch (error) {
+    results.push({ name: t('settings.testApp'), ok: false, detail: String(error?.message ?? error) })
+  }
+
+  const npmStarted = Date.now()
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn(
+        state.toolchain.nodeBin,
+        [state.toolchain.npmCli, 'ping', '--loglevel=error'],
+        // A copy of the environment with the setting under test applied, so
+        // the saved one is not disturbed by a test.
+        { env: proxy.applyToEnv(setting, childEnv(state.toolchain)), stdio: 'ignore', windowsHide: true },
+      )
+      const timer = setTimeout(() => { child.kill(); reject(new Error(t('settings.testTimeout'))) }, 30_000)
+      child.on('error', error => { clearTimeout(timer); reject(error) })
+      child.on('exit', code => {
+        clearTimeout(timer)
+        code === 0 ? resolve() : reject(new Error(`npm ping exit ${code}`))
+      })
+    })
+    results.push({ name: t('settings.testNpm'), ok: true, detail: t('settings.testOk', { ms: Date.now() - npmStarted }) })
+  } catch (error) {
+    results.push({ name: t('settings.testNpm'), ok: false, detail: String(error?.message ?? error) })
+  }
+  return results
+}
+
+function openSettingsWindow() {
+  if (state.settingsWindow && !state.settingsWindow.isDestroyed()) {
+    state.settingsWindow.show()
+    state.settingsWindow.focus()
+    return
+  }
+  const win = new BrowserWindow({
+    width: 660,
+    height: 680,
+    title: t('window.settings'),
+    webPreferences: { preload: path.join(here, 'settings-preload.cjs') },
+  })
+  win.loadFile(path.join(assets, 'settings.html'))
+  win.on('closed', () => { state.settingsWindow = undefined })
+  state.settingsWindow = win
+}
+
+function registerSettingsIpc() {
+  ipcMain.handle('settings:get-proxy', () => ({
+    proxy: proxySetting(),
+    fromEnv: proxy.proxyFromEnv(),
+    alwaysDirect: proxy.ALWAYS_DIRECT,
+  }))
+  // Answers with an outcome rather than by throwing: an IPC rejection reaches
+  // the window wrapped in "Error invoking remote method …", which is true and
+  // useless to someone who mistyped a port.
+  ipcMain.handle('settings:set-proxy', async (_event, raw) => {
+    const setting = proxy.normalize(raw)
+    if (setting.mode === 'manual') {
+      // Validated here rather than trusted from the window: a malformed URL
+      // saved into settings.json would fail on the next launch, far from the
+      // person who typed it.
+      try {
+        proxy.normalizeUrl(setting.url)
+      } catch (error) {
+        return { ok: false, message: t(`error.proxyUrl.${error.message}`) }
+      }
+    }
+    writeSettings({ proxy: setting })
+    await applyProxy(setting)
+    return { ok: true }
+  })
+  ipcMain.handle('settings:test-proxy', (_event, raw) => testProxy(proxy.normalize(raw)))
 }
 
 // ── Shell updates ───────────────────────────────────────────────────────────
@@ -800,6 +928,7 @@ function actionItems() {
       label: t('menu.settings'),
       submenu: [
         { label: t('menu.language'), submenu: languageItems() },
+        { label: t('menu.proxy'), click: openSettingsWindow },
         { type: 'separator' },
         { label: t('menu.dataDir'), click: () => chooseDataDir().catch(e => errorDialog(t('dialog.settingFailed'), e)) },
         { label: t('menu.logDir'), click: () => chooseLogDir().catch(e => errorDialog(t('dialog.settingFailed'), e)) },
@@ -947,6 +1076,11 @@ async function main() {
   log(`data directory: ${locations.dataDir}`)
   if (locations.logDir !== locations.dataDir) log(`log directory: ${locations.logDir}`)
   registerPluginIpc()
+  registerSettingsIpc()
+  // Before the first child is spawned and before anything is fetched: the
+  // runtime install on a first launch is exactly the thing a user behind a
+  // proxy needs this for.
+  await applyProxy(proxySetting()).catch(error => log(`could not apply the proxy setting: ${error?.message ?? error}`))
   const window = new BrowserWindow({
     width: 1280,
     height: 840,

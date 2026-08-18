@@ -28,6 +28,7 @@ The repository is named `dsh-desktop`; the packaged application is named **DeepS
 | **Supervision** | An unplanned exit — including an OOM abort, which arrives as a signal rather than an exit code — is restarted automatically, backing off 1s/3s/8s. Three consecutive failures raise a dialog instead of spinning. A server that stays up for a minute earns a fresh budget, so an occasional crash always gets the full three attempts. |
 | **Recoverable start** | A server that misses the readiness deadline offers a retry rather than killing the app: on a busy disk it is usually just slow, not broken. |
 | **Storage** | `DSH_HOME` points inside the app's data directory, so profiles, sessions and settings are all owned by the app. The menu opens the data directory and the log directly. |
+| **Proxy setting** | The app has two unrelated networks: its own requests go through Chromium, while npm (the runtime), pnpm (plugins) and the `dsh` server that calls the model API read proxy variables from their environment. A GUI app launched from Finder or the Start menu gets neither — the proxy exported in a shell profile is invisible to it, and the system-wide setting is often switched off. Settings → Proxy… configures both at once, and tests each separately. |
 | **Bundled toolchain** | Packaged builds carry their own Node runtime, so a target machine needs nothing preinstalled. Running from source falls back to finding Node ≥ 22 on the machine (PATH, nvm, Homebrew, `%ProgramFiles%`), which also sidesteps GUI apps not inheriting a shell `PATH`. |
 | **Plugin manager** | Install, update and remove `dsh` plugins from a window: by npm name, `github:` spec, absolute local path, or a zip package — a zip is unpacked into `<data dir>/dsh-home/plugins/<package name>` and installed from there as a local path. A plugin that exports a config schema gets a generated form; values are written to the profile's `plugin-config.json` and mirrored into a marked block in `cordis.patch.yml`. |
 | **Plugin market** | Its own window (Plugins → Plugin Market…): the [DSH Market](https://dshplugin.market/) catalog, searchable, with stars and descriptions, one click to install. The catalog is cached locally (no network for six hours, refreshable by hand), so browsing works offline. One-click install is offered only for entries the market has verified and that ship on npm; a git-hosted entry gets a repository link and is installed by hand from the Installed tab. The source is the `marketCatalogUrl` setting — see [Data locations](#data-locations). |
@@ -132,6 +133,7 @@ After installing, verify the three things listed under [Platform support](#platf
 |---|---|
 | Plugins → Plugin Market… | Browse the catalog, search, install with one click |
 | Plugins → Manage Plugins… | Install, update, configure and remove installed plugins |
+| Settings → Proxy… | Network proxy, applied to the app's own requests and to every child process |
 | Check for App Updates | Against the newest release; hot-updates when it can, downloads the installer when it cannot |
 | Check for Runtime Updates | Dual-slot `dsh` runtime update, with a restart prompt after the self-test passes |
 | Restart service | Stops the current server tree and starts the same version again |
@@ -162,6 +164,7 @@ Optional keys in `settings.json`:
 | Key | Effect |
 |---|---|
 | `locale` | UI language; written when it is switched from the menu |
+| `proxy` | `{ mode, url, bypass }`, where `mode` is `system` (default), `direct` or `manual`. Edited under Settings → Proxy…; `localhost`, `127.0.0.1` and `::1` are always direct and need no `bypass` entry. |
 | `marketCatalogUrl` | Plugin market catalog, `https://dshplugin.market/plugins.json` by default. Point it at your own or another list (for instance `https://awesome-dsh-plugin.com/plugins.json`) and hit Refresh in the market tab. |
 
 ## App updates
