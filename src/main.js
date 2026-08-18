@@ -22,10 +22,14 @@ import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
 import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
 import { resolveLocations, saveLocations } from './locations.js'
+import {
+  compareVersions, downloadInstaller, fetchLatestRelease, fetchShellManifest, plan, stageShellUpdate,
+} from './app-update.js'
 import { DEFAULT_CATALOG_URL, loadCatalog } from './market.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
+import { confirmBundle, shellDirOf } from './shell-bundle.js'
 import {
   activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
   installIntoSlot, latestVersion, readPointer, slotDir,
@@ -78,6 +82,10 @@ function initPaths() {
   // a few hundred entries rather than the multi-megabyte document they came
   // from. It is a cache: deleting it costs one refresh.
   paths.marketCache = path.join(userData, 'market-catalog.json')
+  // Hot-updated shells, and the installers downloaded for the updates that
+  // cannot be hot.
+  paths.shellDir = shellDirOf(locations.dataDir)
+  paths.downloads = path.join(userData, 'updates')
   // A migrated directory keeps its old dsh-shell.log beside this one; that
   // history is the user's, so it is left alone rather than renamed or removed.
   paths.logDir = locations.logDir
@@ -429,6 +437,116 @@ async function updateRuntime() {
   }
 }
 
+// ── Shell updates ───────────────────────────────────────────────────────────
+// The app updates itself in two ways, decided by the release rather than by
+// the user: a new shell is downloaded and booted from the data directory,
+// while anything that changes the packaged bundle needs its installer.
+
+/** The shell that is actually running: a hot-updated one, or what shipped. */
+function shellVersion() {
+  return globalThis.__dshShellBundle?.version ?? app.getVersion()
+}
+
+/**
+ * Checks for a newer shell and applies it.
+ *
+ * @param {{silent?: boolean}} [options] a silent check says nothing when
+ *   there is no update and nothing when the network is down — it runs at
+ *   startup, where neither is news.
+ */
+async function updateApp({ silent = false } = {}) {
+  if (state.updating) {
+    if (!silent) await dialog.showMessageBox(state.window, { message: t('dialog.updateBusy') })
+    return
+  }
+  state.updating = true
+  try {
+    const current = shellVersion()
+    if (!silent) setUpdatePhase('checking')
+    let release
+    let manifest
+    try {
+      release = await fetchLatestRelease({ fetchImpl: net.fetch })
+      manifest = await fetchShellManifest(release, { fetchImpl: net.fetch })
+    } catch (error) {
+      log(`app update check failed: ${error?.message ?? error}`)
+      if (silent) return
+      throw new Error(t('error.checkFailed', { message: error?.message ?? error }))
+    }
+    const decision = plan({ current, electronVersion: process.versions.electron, release, manifest })
+    log(`app update check: running ${current}, published ${release.version} → ${decision.kind}`)
+    setUpdatePhase(null)
+
+    if (decision.kind === 'current') {
+      if (!silent) await dialog.showMessageBox(state.window, { message: t('dialog.appUpToDate', { version: current }) })
+      return
+    }
+    // Release notes are the author's own words, and the first lines are the
+    // ones worth showing in a box this size.
+    const notes = release.notes.split('\n').slice(0, 8).join('\n')
+    const { response } = await dialog.showMessageBox(state.window, {
+      type: 'question',
+      message: t('dialog.appUpdateAvailable', { version: release.version }),
+      detail: `${t(decision.kind === 'hot' ? 'dialog.appUpdateHot' : 'dialog.appUpdateInstall', { current })}${notes ? `\n\n${notes}` : ''}`,
+      buttons: [t(decision.kind === 'hot' ? 'button.update' : 'button.download'), t('button.later')],
+      defaultId: 0,
+      cancelId: 1,
+    })
+    if (response !== 0) return
+
+    if (decision.kind === 'hot') {
+      setUpdatePhase('downloadingShell', { version: release.version })
+      await stageShellUpdate({ release, manifest, shellDir: paths.shellDir, fetchImpl: net.fetch, log })
+      setUpdatePhase(null)
+      const { response: restart } = await dialog.showMessageBox(state.window, {
+        message: t('dialog.appUpdateStaged', { version: release.version }),
+        detail: t('dialog.appUpdateStagedDetail'),
+        buttons: [t('button.restartApp'), t('button.restartLater')],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      // Not setting state.quitting: before-quit reads it to tell a shutdown
+      // already under way from a new request, and skipping it would leave the
+      // server running for the relaunched app to collide with.
+      if (restart === 0) { app.relaunch(); app.quit() }
+      return
+    }
+
+    setUpdatePhase('downloadingInstaller', { version: release.version })
+    const file = await downloadInstaller({ release, dir: paths.downloads, fetchImpl: net.fetch, log })
+    setUpdatePhase(null)
+    await dialog.showMessageBox(state.window, {
+      message: t('dialog.appInstallerReady', { version: release.version }),
+      detail: t('dialog.appInstallerDetail'),
+      buttons: [t('button.ok')],
+    })
+    // Opened rather than run for the user: replacing a running app from
+    // inside itself is how you end up with neither copy, and the platform's
+    // installer already knows how to do it properly.
+    shell.showItemInFolder(file)
+    await shell.openPath(file)
+  } finally {
+    setUpdatePhase(null)
+    state.updating = false
+  }
+}
+
+/**
+ * Tells the hot-update machinery that this shell starts. Called once the app
+ * has a window and a server, which is the definition the rollback rule cares
+ * about; boot.js also confirms on its own after a minute, in case a future
+ * shell forgets to call this.
+ */
+function confirmShell() {
+  const bundle = globalThis.__dshShellBundle
+  if (!bundle) return
+  try {
+    if (confirmBundle(paths.shellDir, bundle.version)) log(`shell ${bundle.version} confirmed`)
+  } catch (error) {
+    log(`could not confirm shell ${bundle.version}: ${error?.message ?? error}`)
+  }
+}
+
 // ── Plugin manager ──────────────────────────────────────────────────────────
 // Installs/removes dsh plugins by driving the runtime's own `dsh plugin`
 // command against the web profile — the shell never touches harness source.
@@ -690,6 +808,9 @@ function actionItems() {
     { type: 'separator' },
     state.update
       ? { label: t('menu.updating'), enabled: false }
+      : { label: t('menu.checkAppUpdate'), click: () => updateApp().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
+    state.update
+      ? { label: t('menu.updating'), enabled: false }
       : { label: t('menu.checkUpdate'), click: () => updateRuntime().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
     { label: t('menu.restartService'), click: () => restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e)) },
     { type: 'separator' },
@@ -871,6 +992,16 @@ async function main() {
   // The environment is ready; past this point a failure is about the server
   // itself, and those are worth another try rather than an app that quits.
   await launchServer().catch(offerLaunchRetry)
+
+  // A shell that got this far — window, toolchain, runtime, server — is a
+  // shell that starts, which is what the hot-update rollback rule asks.
+  confirmShell()
+
+  // The startup check waits until the app is doing its job: an update dialog
+  // racing the first paint would be the first thing a user sees, and the one
+  // thing they did not come here for. It says nothing unless there is
+  // something new, and nothing at all when the network is unreachable.
+  setTimeout(() => { updateApp({ silent: true }).catch(error => log(`silent update check: ${error?.message ?? error}`)) }, 30_000)
 }
 
 const locked = app.requestSingleInstanceLock()

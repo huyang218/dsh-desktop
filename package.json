@@ -21,7 +21,7 @@
   "homepage": "https://github.com/huyang218/dsh-desktop",
   "bugs": "https://github.com/huyang218/dsh-desktop/issues",
   "type": "module",
-  "main": "src/main.js",
+  "main": "src/boot.js",
   "engines": {
     "node": ">=22"
   },

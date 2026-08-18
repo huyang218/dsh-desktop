@@ -23,6 +23,7 @@ The repository is named `dsh-desktop`; the packaged application is named **DeepS
 | | |
 |---|---|
 | **Dual-slot updates** | The runtime is installed by npm into `runtime/slot-a` or `slot-b`, with `current.json` naming the active one. An update installs into the idle slot, boots a probe server against it, and only moves the pointer once that self-test passes — a failed upgrade leaves the working version untouched. |
+| **App self-update** | The version here against the newest GitHub release, in two flavours. A **hot update**, when the new version only changes the shell (JavaScript and markup): a few hundred KB into the data directory, live after a restart, with the installed app bundle untouched — so its signature, and the privacy permissions macOS binds to it, survive. An **installer update**, when Electron or the bundled runtime changed: the app downloads the installer and hands it to you. Checked once, quietly, after startup, and from the menu whenever you like. |
 | **Process ownership** | The server starts with the window on a random free port and loads once it answers HTTP 200. It runs in its own process group (POSIX) or job tree (Windows), and the whole tree is terminated when the app quits — no orphans. |
 | **Supervision** | An unplanned exit — including an OOM abort, which arrives as a signal rather than an exit code — is restarted automatically, backing off 1s/3s/8s. Three consecutive failures raise a dialog instead of spinning. A server that stays up for a minute earns a fresh budget, so an occasional crash always gets the full three attempts. |
 | **Recoverable start** | A server that misses the readiness deadline offers a retry rather than killing the app: on a busy disk it is usually just slow, not broken. |
@@ -131,7 +132,8 @@ After installing, verify the three things listed under [Platform support](#platf
 |---|---|
 | Plugins → Plugin Market… | Browse the catalog, search, install with one click |
 | Plugins → Manage Plugins… | Install, update, configure and remove installed plugins |
-| Check for updates | Dual-slot update, with a restart prompt after the self-test passes |
+| Check for App Updates | Against the newest release; hot-updates when it can, downloads the installer when it cannot |
+| Check for Runtime Updates | Dual-slot `dsh` runtime update, with a restart prompt after the self-test passes |
 | Restart service | Stops the current server tree and starts the same version again |
 | Open data directory / Open log | |
 
@@ -148,6 +150,8 @@ dsh-desktop/
 ├── node-runtime/       bundled Node (packaged builds only)
 ├── dsh-home/           DSH_HOME: profiles, sessions, settings
 │   └── plugins/        zip-installed plugins, linked into the profile
+├── shell/              hot-updated shells; current.json names the live one
+├── updates/            installers downloaded for full updates
 ├── market-catalog.json cached market catalog; deleting it costs one refresh
 ├── settings.json       shell settings: language, market source
 └── dsh-desktop.log     app and server log
@@ -159,6 +163,29 @@ Optional keys in `settings.json`:
 |---|---|
 | `locale` | UI language; written when it is switched from the menu |
 | `marketCatalogUrl` | Plugin market catalog, `https://dshplugin.market/plugins.json` by default. Point it at your own or another list (for instance `https://awesome-dsh-plugin.com/plugins.json`) and hit Refresh in the market tab. |
+
+## App updates
+
+The local version is `package.json`'s; the published one is the newest release tag of this repository. Besides the dmg and the installer, every tag build publishes two small files:
+
+- `shell-<version>.zip` — the shell's own code (`src/` and `assets/`, no Electron and no runtime), about 170KB
+- `shell-update.json` — `{ version, electron, sha256, asset }`
+
+From those the app decides which path applies: when the manifest's Electron major matches the running one, the update is **hot**; otherwise the change lives inside the app bundle (Electron, the bundled Node, the runtime seed) and only the **installer** can deliver it.
+
+A hot update lands in `<data dir>/shell/<version>/`, and `src/boot.js` picks which copy starts:
+
+```
+<data dir>/shell/
+├── current.json     { version, confirmed, attempts }
+└── 0.1.2/           src/, assets/, shell.json
+```
+
+The rule is the dual-slot rule the `dsh` runtime already uses, applied to the code that boots the app: a bundle that has not proven it can start gets two attempts, and an import that throws, a missing manifest, a mismatched Electron major or a directory that vanished all fall back to the packaged shell and discard the download. The worst outcome of a hot update is therefore the version the user installed, which is still sitting there untouched. A bundle is confirmed once the window and the server are up (with a one-minute fallback in `boot.js`), after which attempts stop counting.
+
+The download is checked against the SHA-256 in `shell-update.json` and discarded on a mismatch; the trust anchor is the one the installer download already relies on, GitHub's TLS.
+
+An installer update only downloads the installer and reveals it — replacing a running app from inside itself is the classic way to end up with neither copy, and the platform's installer already knows how to do it.
 
 ## Platform support
 

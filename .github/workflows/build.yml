@@ -36,6 +36,69 @@ permissions:
   contents: read
 
 jobs:
+  # The hot-update payload: the shell's own code, which is the same on every
+  # platform, published so an installed app can update itself without
+  # replacing its bundle. See src/shell-bundle.js for what consumes this.
+  shell-bundle:
+    name: Shell bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Pack the shell
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          # The Electron the shell is built against decides which installed
+          # apps may hot-update to it: a different major needs the installer.
+          electron="$(node -p 'require("./package-lock.json").packages["node_modules/electron"].version')"
+          jq -n --arg v "$version" --arg e "$electron" --arg b "$(date -u +%FT%TZ)" \
+            '{version: $v, electron: $e, builtAt: $b}' > shell.json
+          zip -qr "shell-$version.zip" src assets package.json shell.json
+          sha="$(shasum -a 256 "shell-$version.zip" | cut -d' ' -f1)"
+          jq -n --arg v "$version" --arg e "$electron" --arg s "$sha" --arg a "shell-$version.zip" \
+            '{version: $v, electron: $e, sha256: $s, asset: $a}' > shell-update.json
+          echo "version=$version" >> "$GITHUB_ENV"
+          ls -l "shell-$version.zip" shell-update.json
+          cat shell-update.json
+
+      # The app refuses a bundle it cannot boot, so refuse to publish one:
+      # everything the boot path checks is checked here, where a person is
+      # still watching.
+      - name: Check the bundle unpacks into a bootable shell
+        run: |
+          set -euo pipefail
+          unzip -q "shell-$version.zip" -d /tmp/bundle
+          test -f /tmp/bundle/src/main.js
+          test -f /tmp/bundle/src/boot.js
+          test -f /tmp/bundle/assets/plugins.html
+          node -e '
+            const m = require("/tmp/bundle/shell.json")
+            const p = require("/tmp/bundle/package.json")
+            if (m.version !== p.version) throw new Error("manifest and package.json disagree")
+            console.log("bundle", m.version, "for Electron", m.electron)
+          '
+          for f in /tmp/bundle/src/*.js; do node --check "$f"; done
+
+      - name: Publish to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --verify-tag --generate-notes --title "$tag" \
+            || gh release view "$tag" >/dev/null
+          gh release upload "$tag" "shell-$version.zip" shell-update.json --clobber
+
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
