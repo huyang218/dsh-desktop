@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Unofficial desktop app for DeepSeek Harness (dsh): installs and updates the runtime, owns the server process and storage, and wraps the web UI in a window.",
   "author": {
@@ -89,7 +89,9 @@
             "CFBundleTypeName": "Any file",
             "CFBundleTypeRole": "Viewer",
             "LSHandlerRank": "Alternate",
-            "LSItemContentTypes": ["public.item"]
+            "LSItemContentTypes": [
+              "public.item"
+            ]
           }
         ],
         "NSDocumentsFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
