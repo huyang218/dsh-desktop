@@ -2,8 +2,9 @@
 #
 # Packaging snapshots the build machine: `npm run seed` archives the dsh
 # runtime and the Node toolchain found on it, which is why a Windows installer
-# has to be built on Windows and an Intel dmg on an Intel Mac. One matrix here
-# replaces three machines nobody has.
+# has to be built on Windows and a dmg on a Mac. This matrix is what makes a
+# Windows installer possible at all: built from macOS it would carry a macOS
+# Node binary.
 #
 # The runner has never launched the app, so it has no runtime to snapshot.
 # DSH_SEED_BOOTSTRAP lets the seed step install one first — set on the job so
@@ -47,16 +48,13 @@ jobs:
       # One platform failing should not hide whether the others are fine.
       fail-fast: false
       matrix:
+        # No Intel macOS row: the macos-13 runners are scarce enough that the
+        # job sat queued through two whole runs while the others finished. To
+        # build one, add a row with `os: macos-13` and the same mac settings —
+        # electron-builder takes the architecture from the host.
         include:
           - label: macOS (Apple Silicon)
             os: macos-14
-            script: dist:mac
-            artifacts: dist/*.dmg
-            cache: |
-              ~/Library/Caches/electron
-              ~/Library/Caches/electron-builder
-          - label: macOS (Intel)
-            os: macos-13
             script: dist:mac
             artifacts: dist/*.dmg
             cache: |

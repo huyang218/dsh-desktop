@@ -77,7 +77,9 @@ The first consequence can be relaxed on a build machine: `node scripts/prepare-s
 
 ### GitHub Actions
 
-`.github/workflows/build.yml` builds on three machines: macOS Apple Silicon (`macos-14`), macOS Intel (`macos-13`) and Windows (`windows-latest`). It runs on demand, or when a `v*` tag is pushed.
+`.github/workflows/build.yml` builds on two machines: macOS Apple Silicon (`macos-14`) and Windows (`windows-latest`). It runs on demand, or when a `v*` tag is pushed.
+
+There is no Intel macOS row: the `macos-13` runners are scarce enough that the job sat queued through two whole runs while the others finished. To build one, add a row with `os: macos-13` and the same mac settings — electron-builder takes the architecture from the host.
 
 A tag build uploads the installers straight to that release, using the `gh` CLI already on every runner rather than a third-party action. A manual run does **not** upload them by default: a free account gets 500MB of artifact storage and a single dmg is over 200MB, so three platforms would fill it — tick `upload` in the run dialog when the installers are what you want, and delete them afterwards.
 
