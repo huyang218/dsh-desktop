@@ -88,7 +88,7 @@
           {
             "CFBundleTypeName": "Any file",
             "CFBundleTypeRole": "Viewer",
-            "LSHandlerRank": "None",
+            "LSHandlerRank": "Alternate",
             "LSItemContentTypes": ["public.item"]
           }
         ],
