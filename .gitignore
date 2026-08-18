@@ -7,3 +7,6 @@ node-runtime.version
 seed.tar
 
 .DS_Store
+
+# Browser-automation scratch output, written into the repo by the MCP tool
+.playwright-mcp/

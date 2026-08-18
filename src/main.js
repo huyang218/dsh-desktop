@@ -12,10 +12,12 @@
  * tray icon and the Dock bring it back. Quitting (tray menu or Cmd+Q) stops
  * the server process group before exit.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, screen, session, shell, Tray } from 'electron'
+import {
+  app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, Notification, screen, session, shell, Tray,
+} from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -42,12 +44,22 @@ import {
 } from './runtime.js'
 import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 import { createSnapshot, inspectSnapshot, restoreSnapshot } from './snapshot.js'
+import { formatPaths, insertionScript, pathsFromArgv } from './send-to-chat.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
 
 const locations = resolveLocations(app.getPath('appData'))
 app.setPath('userData', locations.dataDir)
+
+// macOS fires this before the app is ready — for a launch by Open With it is
+// the whole reason the app is starting — so it is registered here rather than
+// in main(), and the paths wait in the queue until there is a chat to put
+// them in.
+app.on('open-file', (event, filePath) => {
+  event.preventDefault()
+  sendFilesToChat([filePath]).catch(error => log(`open-file failed: ${error?.message ?? error}`))
+})
 
 /**
  * @type {{
@@ -314,6 +326,9 @@ async function launchServer() {
   if (!window.isDestroyed()) await window.loadURL(`http://127.0.0.1:${port}/`)
   log(`dsh ${runtime.version} serving on ${port} (slot ${runtime.slot})`)
   clearPluginSuspect()
+  // Anything that arrived while the app was still starting — which is every
+  // file that started it — goes in now that there is a composer to reach.
+  flushPendingFiles()
 }
 
 async function restartServer() {
@@ -579,6 +594,115 @@ function setOpensAtLogin(enabled) {
   log(`open at login: ${enabled}`)
 }
 
+// ── Files from the desktop ──────────────────────────────────────────────────
+// Three ways in — Finder's Open With and the Dock icon on macOS, the Send to
+// menu on Windows, and dragging onto the window on both — all arriving at
+// one place: the paths go into the chat composer.
+
+/** Paths that arrived before there was a window and a server to put them in. */
+const pendingFiles = []
+
+/**
+ * Puts paths into the composer, or into the clipboard when it will not have
+ * them.
+ *
+ * The UI belongs to the runtime and its markup is free to change, so the
+ * result of the insertion is read back rather than assumed. Everything that
+ * can go wrong — no workspace open so the composer is read-only, a UI that
+ * renders something other than a textarea, a page still loading — ends the
+ * same way: the paths are on the clipboard and the user is told, which is
+ * one keystroke from where they wanted them.
+ *
+ * @param {string[]} paths
+ */
+async function sendFilesToChat(paths) {
+  const text = formatPaths(paths)
+  if (!text) return
+  // Held until there is something to insert into; flushed by launchServer.
+  if (!state.port || !state.window || state.window.isDestroyed()) {
+    pendingFiles.push(...paths)
+    log(`file send held until the server is up: ${paths.length} path(s)`)
+    return
+  }
+  showWindow()
+  let outcome
+  try {
+    outcome = await state.window.webContents.executeJavaScript(insertionScript(text), true)
+  } catch (error) {
+    outcome = { ok: false, why: String(error?.message ?? error) }
+  }
+  if (outcome?.ok) {
+    log(`sent ${paths.length} path(s) to the chat`)
+    return
+  }
+  clipboard.writeText(text)
+  log(`could not reach the composer (${outcome?.why ?? 'unknown'}); paths copied to the clipboard`)
+  notify(t('notify.filesCopied'), t('notify.filesCopiedBody', { count: paths.length }))
+}
+
+/** Flushes whatever arrived while the app was still starting. */
+function flushPendingFiles() {
+  if (pendingFiles.length === 0) return
+  const paths = pendingFiles.splice(0, pendingFiles.length)
+  sendFilesToChat(paths).catch(error => log(`file send failed: ${error?.message ?? error}`))
+}
+
+/** A notification when there is one, a dialog when there is not. */
+function notify(title, body) {
+  if (Notification.isSupported()) {
+    new Notification({ title, body }).show()
+    return
+  }
+  dialog.showMessageBox(state.window, { message: title, detail: body, buttons: [t('button.ok')] })
+}
+
+/**
+ * Adds or removes the Windows "Send to" shortcut.
+ *
+ * The shortcut is a .lnk, which is a COM object rather than a file format
+ * anything here can write, so Windows is asked to make it — the same way a
+ * person would, through the Windows Script Host.
+ *
+ * @param {boolean} wanted
+ */
+async function setSendToShortcut(wanted) {
+  const link = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'SendTo', 'DeepSeek Harness.lnk')
+  if (!wanted) {
+    await rm(link, { force: true })
+    log('send-to shortcut removed')
+    return
+  }
+  const script = [
+    '$ErrorActionPreference = "Stop"',
+    '$shell = New-Object -ComObject WScript.Shell',
+    `$link = $shell.CreateShortcut(${powershellString(link)})`,
+    `$link.TargetPath = ${powershellString(process.execPath)}`,
+    `$link.WorkingDirectory = ${powershellString(path.dirname(process.execPath))}`,
+    '$link.Save()',
+  ].join('; ')
+  await new Promise((resolve, reject) => {
+    const child = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
+    })
+    let err = ''
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', chunk => { err += chunk })
+    child.on('error', reject)
+    child.on('exit', code => (code === 0 ? resolve() : reject(new Error(err.trim() || `powershell exit ${code}`))))
+  })
+  log(`send-to shortcut written to ${link}`)
+}
+
+/** Single-quoted PowerShell literal: the only escape inside one is ''. */
+function powershellString(value) {
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
+function sendToShortcutExists() {
+  return process.platform === 'win32'
+    && existsSync(path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'SendTo', 'DeepSeek Harness.lnk'))
+}
+
 // ── Data snapshots ──────────────────────────────────────────────────────────
 // Everything else has a way back: the runtime keeps the previous version in
 // the other slot, a hot update falls back to the packaged shell, a plugin can
@@ -745,6 +869,26 @@ function openSettingsWindow() {
   win.loadFile(path.join(assets, 'settings.html'))
   win.on('closed', () => { state.settingsWindow = undefined })
   state.settingsWindow = win
+}
+
+/**
+ * The three ways a file reaches the chat.
+ *
+ * macOS hands them over as `open-file` events — Finder's Open With, and a
+ * drop on the Dock icon. Windows starts the app again with the files as
+ * arguments, and the running instance is given that command line. A drop on
+ * the window itself comes from the preload. All three end in the same call.
+ */
+function registerFileHandoff() {
+  ipcMain.on('chat:files-dropped', (_event, paths) => {
+    if (Array.isArray(paths)) sendFilesToChat(paths.map(String)).catch(error => log(`drop failed: ${error?.message ?? error}`))
+  })
+  // Alongside the listener that raises the window; this one reads the files
+  // out of the command line that Windows started the second instance with.
+  app.on('second-instance', (_event, argv) => {
+    const paths = pathsFromArgv(argv, existsSync)
+    if (paths.length > 0) sendFilesToChat(paths).catch(error => log(`send-to failed: ${error?.message ?? error}`))
+  })
 }
 
 function registerSettingsIpc() {
@@ -1296,6 +1440,16 @@ function actionItems() {
           label: `${opensAtLogin() ? '\u2713' : '\u2007\u2007'} ${t('menu.openAtLogin')}`,
           click: () => { setOpensAtLogin(!opensAtLogin()); buildMenu(); refreshTrayMenu() },
         },
+        ...(process.platform === 'win32'
+          ? [{
+            label: `${sendToShortcutExists() ? '\u2713' : '\u2007\u2007'} ${t('menu.sendTo')}`,
+            click: () => {
+              setSendToShortcut(!sendToShortcutExists())
+                .then(() => { buildMenu(); refreshTrayMenu() })
+                .catch(e => errorDialog(t('dialog.sendToFailed'), e))
+            },
+          }]
+          : []),
         {
           label: `${readSettings().startHidden ? '\u2713' : '\u2007\u2007'} ${t('menu.startHidden')}`,
           click: () => {
@@ -1464,6 +1618,7 @@ async function main() {
   if (locations.logDir !== locations.dataDir) log(`log directory: ${locations.logDir}`)
   registerPluginIpc()
   registerSettingsIpc()
+  registerFileHandoff()
   // Before the first child is spawned and before anything is fetched: the
   // runtime install on a first launch is exactly the thing a user behind a
   // proxy needs this for.
@@ -1478,7 +1633,12 @@ async function main() {
     // Starting hidden means starting in the tray: the server comes up, the
     // window is built and loaded, and nothing appears until it is asked for.
     show: !settings.startHidden,
-    webPreferences: { nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      // Only for files dropped on the window; it exposes nothing to the page.
+      preload: path.join(here, 'chat-preload.cjs'),
+    },
   })
   if (settings.windowMaximized) window.maximize()
   rememberBounds(window)
@@ -1534,6 +1694,10 @@ async function main() {
   setTimeout(() => { updateApp({ silent: true }).catch(error => log(`silent update check: ${error?.message ?? error}`)) }, 30_000)
 }
 
+// One instance only: two of these would run two servers over one DSH_HOME.
+// The second instance is also how Windows delivers a "Send to" selection —
+// its arguments are wanted even though the process itself is not, which
+// registerFileHandoff() reads out of the event.
 const locked = app.requestSingleInstanceLock()
 if (!locked) {
   app.quit()
