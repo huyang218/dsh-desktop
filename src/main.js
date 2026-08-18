@@ -41,6 +41,7 @@ import {
   installedVersion, installIntoSlot, latestVersion, readPointer, slotDir,
 } from './runtime.js'
 import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
+import { createSnapshot, inspectSnapshot, restoreSnapshot } from './snapshot.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
@@ -238,15 +239,26 @@ async function fatal(title, error) {
  */
 async function offerLaunchRetry(error) {
   log(`launch failed: ${error?.stack ?? error}`)
+  const suspect = pluginSuspect()
+  const buttons = suspect
+    ? [t(`button.undo.${suspect.kind}`, { name: suspect.name }), t('button.retry'), t('button.quit')]
+    : [t('button.retry'), t('button.quit')]
   const { response } = await dialog.showMessageBox({
     type: 'error',
     message: t('dialog.startFailed'),
-    detail: `${error?.message ?? error}\n\n${t('dialog.startFailedDetail')}`,
-    buttons: [t('button.retry'), t('button.quit')],
+    detail: [
+      error?.message ?? error,
+      suspect ? t('dialog.pluginSuspect', { name: suspect.name }) : t('dialog.startFailedDetail'),
+    ].join('\n\n'),
+    buttons,
     defaultId: 0,
-    cancelId: 1,
+    cancelId: buttons.length - 1,
   })
-  if (response !== 0) {
+  if (suspect && response === 0) {
+    await undoPluginOp(suspect).catch(e => errorDialog(t('dialog.undoFailed'), e))
+    return
+  }
+  if (response !== (suspect ? 1 : 0)) {
     app.quit()
     return
   }
@@ -301,6 +313,7 @@ async function launchServer() {
   }
   if (!window.isDestroyed()) await window.loadURL(`http://127.0.0.1:${port}/`)
   log(`dsh ${runtime.version} serving on ${port} (slot ${runtime.slot})`)
+  clearPluginSuspect()
 }
 
 async function restartServer() {
@@ -351,15 +364,30 @@ function superviseExit({ code, signal, uptimeMs }) {
 
 /** Reports an exit the shell could not recover from, with a retry button. */
 function offerRestart(code, signal, detail) {
+  // A plugin touched moments ago is the likeliest cause and the easiest fix,
+  // so it leads: the first button undoes it, and the ordinary restart stays
+  // available for someone who disagrees.
+  const suspect = pluginSuspect()
+  const buttons = suspect
+    ? [t(`button.undo.${suspect.kind}`, { name: suspect.name }), t('button.restartService'), t('button.ignore')]
+    : [t('button.restartService'), t('button.ignore')]
   dialog.showMessageBox(state.window, {
     type: 'error',
     message: t('dialog.serverExited', { cause: describeExit(code, signal) }),
-    detail: `${detail}\n${t('dialog.logPath', { path: paths.logFile })}`,
-    buttons: [t('button.restartService'), t('button.ignore')],
+    detail: [
+      detail,
+      suspect ? t('dialog.pluginSuspect', { name: suspect.name }) : '',
+      t('dialog.logPath', { path: paths.logFile }),
+    ].filter(Boolean).join('\n'),
+    buttons,
     defaultId: 0,
-    cancelId: 1,
+    cancelId: buttons.length - 1,
   }).then(({ response }) => {
-    if (response === 0) restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e))
+    if (suspect && response === 0) {
+      undoPluginOp(suspect).catch(e => errorDialog(t('dialog.undoFailed'), e))
+      return
+    }
+    if (response === (suspect ? 1 : 0)) restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e))
   })
 }
 
@@ -549,6 +577,70 @@ function setOpensAtLogin(enabled) {
   // own startHidden setting is what actually decides, so both paths agree.
   app.setLoginItemSettings({ openAtLogin: enabled, openAsHidden: readSettings().startHidden === true })
   log(`open at login: ${enabled}`)
+}
+
+// ── Data snapshots ──────────────────────────────────────────────────────────
+// Everything else has a way back: the runtime keeps the previous version in
+// the other slot, a hot update falls back to the packaged shell, a plugin can
+// be switched off. Sessions have none, and they are the part the user made.
+
+/** Writes a snapshot of DSH_HOME wherever the user chooses. */
+async function exportSnapshot() {
+  const stamp = new Date().toISOString().slice(0, 10)
+  const { canceled, filePath } = await dialog.showSaveDialog(state.window, {
+    title: t('dialog.snapshotSave'),
+    defaultPath: path.join(app.getPath('downloads'), `dsh-snapshot-${stamp}.tar.gz`),
+    filters: [{ name: 'tar.gz', extensions: ['tar.gz', 'tgz'] }],
+  })
+  if (canceled || !filePath) return
+  const { bytes } = await createSnapshot({ dshHome: paths.dshHome, file: filePath, log })
+  await dialog.showMessageBox(state.window, {
+    message: t('dialog.snapshotDone', { size: Math.max(1, Math.round(bytes / 1024 / 1024)) }),
+    detail: filePath,
+    buttons: [t('button.ok')],
+  })
+}
+
+/**
+ * Replaces DSH_HOME with a snapshot's contents.
+ *
+ * The server is stopped first — the directory is moved out from under it —
+ * and started again on the restored data, so the app ends up in a state the
+ * user can look at rather than one they have to relaunch into.
+ */
+async function importSnapshot() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.snapshotOpen'),
+    filters: [{ name: 'tar.gz', extensions: ['tar.gz', 'tgz', 'gz'] }],
+    properties: ['openFile'],
+  })
+  const file = filePaths?.[0]
+  if (canceled || !file) return
+
+  // Checked before anything is stopped: an archive that is not a data
+  // directory should cost the user nothing at all.
+  const { looksRight } = await inspectSnapshot({ file, log })
+  if (!looksRight) throw new Error(t('error.snapshotNotData'))
+
+  const { response } = await dialog.showMessageBox(state.window, {
+    type: 'warning',
+    message: t('dialog.snapshotConfirm'),
+    detail: t('dialog.snapshotConfirmDetail', { file }),
+    buttons: [t('button.restore'), t('button.cancel')],
+    defaultId: 1,
+    cancelId: 1,
+  })
+  if (response !== 0) return
+
+  await stopServer(state.child)
+  state.child = undefined
+  const { backup } = await restoreSnapshot({ dshHome: paths.dshHome, file, log })
+  await restartServer()
+  await dialog.showMessageBox(state.window, {
+    message: t('dialog.snapshotRestored'),
+    detail: t('dialog.snapshotRestoredDetail', { backup }),
+    buttons: [t('button.ok')],
+  })
 }
 
 // ── Proxy ───────────────────────────────────────────────────────────────────
@@ -869,6 +961,60 @@ async function listPlugins() {
   return plugins
 }
 
+/**
+ * The last plugin operation, until a server has started after it.
+ *
+ * Installing a plugin runs code the user has never run before, inside the
+ * server, at startup. When that server then refuses to come back, the shell
+ * knows something the user does not: which plugin was touched a moment ago.
+ * Saying so — and offering to undo it — turns "the app is broken now" into
+ * one button.
+ *
+ * @type {{name: string, kind: 'install'|'enable'|'update', at: number} | undefined}
+ */
+let lastPluginOp
+
+/** How long a plugin operation stays a suspect. */
+const SUSPECT_WINDOW_MS = 15 * 60 * 1000
+
+function rememberPluginOp(name, kind) {
+  if (!name) return
+  lastPluginOp = { name, kind, at: Date.now() }
+  log(`plugin operation recorded: ${kind} ${name}`)
+}
+
+/** Cleared by a server that starts: whatever happens later is not this. */
+function clearPluginSuspect() {
+  if (lastPluginOp) log(`plugin operation cleared by a healthy server: ${lastPluginOp.name}`)
+  lastPluginOp = undefined
+}
+
+/** The plugin worth blaming for a server that will not start, if any. */
+function pluginSuspect() {
+  if (!lastPluginOp) return undefined
+  return Date.now() - lastPluginOp.at < SUSPECT_WINDOW_MS ? lastPluginOp : undefined
+}
+
+/**
+ * Undoes the last plugin operation and starts the server again.
+ *
+ * An install is undone by removing — the plugin was not there a minute ago
+ * and nothing is lost by putting things back. Enabling and updating are
+ * undone by switching the plugin off, which keeps it and its configuration
+ * for whenever the user wants to look into why.
+ */
+async function undoPluginOp(suspect) {
+  await withPluginLock(async () => {
+    if (suspect.kind === 'install') {
+      await runDshPlugin(['remove', suspect.name])
+    } else {
+      await setPluginEnabled(suspect.name, false)
+    }
+  })
+  clearPluginSuspect()
+  await restartServer()
+}
+
 /** Serializes plugin operations; concurrent requests fail fast. */
 async function withPluginLock(work) {
   if (state.pluginBusy) throw new Error(t('error.pluginBusy'))
@@ -1037,13 +1183,19 @@ function registerPluginIpc() {
     event.returnValue = { locale: getLocale(), messages: messages() }
   })
   ipcMain.handle('plugins:list', () => listPlugins())
-  ipcMain.handle('plugins:install', (_event, spec) => withPluginLock(() => {
+  ipcMain.handle('plugins:install', (_event, spec) => withPluginLock(async () => {
     // A pasted repository page is translated into the spec pnpm wants; the
     // translation is logged, because "I asked for a URL and it installed
     // something else" deserves to be visible rather than magic.
     const target = normalizeSpec(spec)
     if (target.from) pluginsLog(`${target.from} → ${target.value}`)
-    return runDshPlugin(['add', target.value])
+    // Which package a spec turns into is pnpm's answer, not ours, so it is
+    // read from the profile afterwards — that name is what a failed boot
+    // will need to point at.
+    const before = new Set((await listPlugins()).map(plugin => plugin.name))
+    await runDshPlugin(['add', target.value])
+    const added = (await listPlugins()).filter(plugin => !before.has(plugin.name))
+    if (added.length === 1) rememberPluginOp(added[0].name, 'install')
   }))
   ipcMain.handle('plugins:pick-zip', () => pickPluginZip())
   ipcMain.handle('plugins:install-zip', (_event, zipPath) => withPluginLock(() => installPluginZip(String(zipPath))))
@@ -1051,12 +1203,14 @@ function registerPluginIpc() {
   // `dsh plugin` forwards to pnpm, so an update is pnpm's own: --latest to
   // cross the semver range the profile recorded, and minimumReleaseAge=0
   // because an explicit click should not wait out a publish quarantine.
-  ipcMain.handle('plugins:update', (_event, name) => withPluginLock(
-    () => runDshPlugin(['update', '--latest', '--config.minimumReleaseAge=0', String(name)]),
-  ))
-  ipcMain.handle('plugins:set-enabled', (_event, name, enabled) => withPluginLock(
-    () => setPluginEnabled(String(name), Boolean(enabled)),
-  ))
+  ipcMain.handle('plugins:update', (_event, name) => withPluginLock(async () => {
+    await runDshPlugin(['update', '--latest', '--config.minimumReleaseAge=0', String(name)])
+    rememberPluginOp(String(name), 'update')
+  }))
+  ipcMain.handle('plugins:set-enabled', (_event, name, enabled) => withPluginLock(async () => {
+    await setPluginEnabled(String(name), Boolean(enabled))
+    if (enabled) rememberPluginOp(String(name), 'enable')
+  }))
   // Outside the plugin lock and never fatal: this is a background question
   // about the registry, and its answer only adds a badge.
   ipcMain.handle('plugins:check-updates', async () => findPluginUpdates({
@@ -1172,6 +1326,9 @@ function actionItems() {
       }]
       : []),
     { label: t('menu.restartService'), click: () => restartServer().catch(e => errorDialog(t('dialog.restartFailed'), e)) },
+    { type: 'separator' },
+    { label: t('menu.exportSnapshot'), click: () => exportSnapshot().catch(e => errorDialog(t('dialog.snapshotFailed'), e)) },
+    { label: t('menu.importSnapshot'), click: () => importSnapshot().catch(e => errorDialog(t('dialog.snapshotFailed'), e)) },
     { type: 'separator' },
     { label: t('menu.openDataDir'), click: () => shell.openPath(app.getPath('userData')) },
     { label: t('menu.openLog'), click: () => shell.openPath(paths.logFile) },

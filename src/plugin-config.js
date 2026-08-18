@@ -187,10 +187,37 @@ async function spliceManagedBlock(patchPath, block) {
   const end = text.indexOf(MARK_END)
   if (begin !== -1 && end !== -1 && end >= begin) {
     text = text.slice(0, begin) + block + text.slice(end + MARK_END.length)
-  } else if (/^\s*\[\]\s*$/m.test(text)) {
-    text = text.replace(/^\s*\[\]\s*$/m, block)
+  } else if (EMPTY_ARRAY.test(text)) {
+    text = text.replace(EMPTY_ARRAY, block)
   } else {
     text = (text.trimEnd() ? text.trimEnd() + '\n\n' : '') + block
   }
-  await writeFile(patchPath, text.trimEnd() + '\n')
+  await writeFile(patchPath, keepArrayValid(text).trimEnd() + '\n')
+}
+
+/** A lone `[]` on its own line: an empty sequence, spelled the flow way. */
+const EMPTY_ARRAY = /^\s*\[\]\s*$/m
+
+/**
+ * Keeps the file a YAML array whatever the managed block currently holds.
+ *
+ * The trap this exists for: a patch file whose entries have all gone leaves
+ * nothing but comments, and a YAML document of only comments parses as
+ * `null`, not as an empty array — which dsh refuses to boot with. Clearing
+ * the last config value, or re-enabling the last disabled plugin, would
+ * therefore leave a profile that will not start.
+ *
+ * So an empty document is spelled `[]`, and that token is removed again the
+ * moment there is a real entry, because a flow sequence and block-sequence
+ * items cannot both be the document.
+ */
+function keepArrayValid(text) {
+  const lines = text.split('\n')
+  const isComment = line => line.trim() === '' || line.trim().startsWith('#')
+  const isEmptyArray = line => /^\s*\[\]\s*$/.test(line)
+  const entries = lines.filter(line => !isComment(line) && !isEmptyArray(line))
+  if (entries.length > 0) return lines.filter(line => !isEmptyArray(line)).join('\n')
+  const already = lines.filter(isEmptyArray)
+  if (already.length === 1) return text
+  return `${lines.filter(line => !isEmptyArray(line)).join('\n').trimEnd()}\n[]`
 }
