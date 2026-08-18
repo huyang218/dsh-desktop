@@ -228,7 +228,7 @@ Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*
 
 **贡献者**
 
-- **Hu Yang**([@huyang218](https://github.com/huyang218))—— 作者、维护者
+- **Hu Yang**([@huyang218](https://github.com/huyang218),guxinglei218@qq.com)—— 作者、维护者
 
 ## 许可
 

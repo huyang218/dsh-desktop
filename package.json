@@ -5,11 +5,13 @@
   "description": "Unofficial desktop app for DeepSeek Harness (dsh): installs and updates the runtime, owns the server process and storage, and wraps the web UI in a window.",
   "author": {
     "name": "Hu Yang",
+    "email": "guxinglei218@qq.com",
     "url": "https://github.com/huyang218"
   },
   "contributors": [
     {
       "name": "Hu Yang",
+      "email": "guxinglei218@qq.com",
       "url": "https://github.com/huyang218"
     }
   ],

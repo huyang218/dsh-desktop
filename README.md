@@ -229,7 +229,7 @@ If a change touches the process lifecycle — start, supervision, shutdown — p
 
 **Contributors**
 
-- **Hu Yang** ([@huyang218](https://github.com/huyang218)) — author, maintainer
+- **Hu Yang** ([@huyang218](https://github.com/huyang218), guxinglei218@qq.com) — author, maintainer
 
 ## License
 
