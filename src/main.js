@@ -27,6 +27,7 @@ import {
 } from './app-update.js'
 import { DEFAULT_CATALOG_URL, loadCatalog } from './market.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
+import { normalizeSpec } from './plugin-spec.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
 import * as proxy from './proxy.js'
@@ -969,7 +970,14 @@ function registerPluginIpc() {
     event.returnValue = { locale: getLocale(), messages: messages() }
   })
   ipcMain.handle('plugins:list', () => listPlugins())
-  ipcMain.handle('plugins:install', (_event, spec) => withPluginLock(() => runDshPlugin(['add', String(spec)])))
+  ipcMain.handle('plugins:install', (_event, spec) => withPluginLock(() => {
+    // A pasted repository page is translated into the spec pnpm wants; the
+    // translation is logged, because "I asked for a URL and it installed
+    // something else" deserves to be visible rather than magic.
+    const target = normalizeSpec(spec)
+    if (target.from) pluginsLog(`${target.from} → ${target.value}`)
+    return runDshPlugin(['add', target.value])
+  }))
   ipcMain.handle('plugins:pick-zip', () => pickPluginZip())
   ipcMain.handle('plugins:install-zip', (_event, zipPath) => withPluginLock(() => installPluginZip(String(zipPath))))
   ipcMain.handle('plugins:remove', (_event, name) => withPluginLock(() => runDshPlugin(['remove', String(name)])))

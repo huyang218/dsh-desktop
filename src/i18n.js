@@ -147,9 +147,9 @@ const MESSAGES = {
     // Plugin manager window
     'plugins.title': '插件管理',
     'plugins.heading': '插件管理',
-    'plugins.specPlaceholder': 'npm 包名 / github:user/repo#commit / 本地绝对路径',
+    'plugins.specPlaceholder': 'npm 包名 / GitHub 链接 / github:user/repo#commit / 本地绝对路径',
     'plugins.install': '安装',
-    'plugins.hint': 'Web UI 皮肤、面板等也是插件,同样方式安装。zip 包会解压到数据目录的 dsh-home/plugins/<包名> 后再安装,该目录需一直保留。git 直装若被 pnpm 拦下,按日志提示在 profile 的 pnpm-workspace.yaml 里放行后重试。',
+    'plugins.hint': 'Web UI 皮肤、面板等也是插件,同样方式安装。直接粘 GitHub 网页链接即可,包括插件集合仓库里指向某个子目录的链接(形如 …/tree/main/packages/xxx),会自动转成 pnpm 的子目录写法。zip 包会解压到数据目录的 dsh-home/plugins/<包名> 后再安装,该目录需一直保留。git 直装若被 pnpm 拦下,按日志提示在 profile 的 pnpm-workspace.yaml 里放行后重试。',
     'plugins.restartNotice': '配置已变更,重启服务后生效(未完成的对话会中断)',
     'plugins.loading': '加载中…',
     'plugins.empty': '还没有安装插件',
@@ -357,9 +357,9 @@ const MESSAGES = {
 
     'plugins.title': 'Plugins',
     'plugins.heading': 'Plugins',
-    'plugins.specPlaceholder': 'npm package / github:user/repo#commit / absolute local path',
+    'plugins.specPlaceholder': 'npm package / GitHub link / github:user/repo#commit / absolute local path',
     'plugins.install': 'Install',
-    'plugins.hint': 'Web UI themes and panels are plugins too, installed the same way. A zip is unpacked into dsh-home/plugins/<package name> in the data directory and installed from there, so that directory has to stay. If a direct git install is refused by pnpm, allow it in the profile\'s pnpm-workspace.yaml as the log says, then retry.',
+    'plugins.hint': 'Web UI themes and panels are plugins too, installed the same way. A GitHub page URL can be pasted as it is, including a link into one package of a collection repository (…/tree/main/packages/xxx), which is translated into pnpm\'s subdirectory spec. A zip is unpacked into dsh-home/plugins/<package name> in the data directory and installed from there, so that directory has to stay. If a direct git install is refused by pnpm, allow it in the profile\'s pnpm-workspace.yaml as the log says, then retry.',
     'plugins.restartNotice': 'Configuration changed; restart the server to apply it (conversations in progress will be interrupted)',
     'plugins.loading': 'Loading…',
     'plugins.empty': 'No plugins installed yet',
