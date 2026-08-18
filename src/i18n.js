@@ -20,7 +20,9 @@ export const LOCALES = [
 const MESSAGES = {
   'zh-CN': {
     // Menus and tray
-    'menu.plugins': '插件管理…',
+    'menu.plugins': '插件',
+    'menu.pluginMarket': '插件市场…',
+    'menu.pluginManage': '插件管理…',
     'menu.settings': '设置',
     'menu.language': '语言',
     'menu.dataDir': '数据目录…',
@@ -55,6 +57,7 @@ const MESSAGES = {
     'tray.title': '更新中 {elapsed}',
     'menu.updating': '更新进行中…',
     'window.plugins': '插件管理',
+    'window.market': '插件市场',
 
     // Buttons
     'button.retry': '重试',
@@ -97,6 +100,7 @@ const MESSAGES = {
     'error.configProbeTimeout': '读取插件配置项超时',
     'error.configProbeOutput': '无法读取 {name} 的配置描述(探针输出异常)',
     'error.macFileAccess': '这其实是 macOS 的隐私保护:「{app}」没有访问该位置(文稿/桌面/下载等受保护目录)的权限。到「系统设置 → 隐私与安全性 → 文件与文件夹」里为它打开对应开关;若列表里找不到它,先在终端执行 tccutil reset SystemPolicyDocumentsFolder {id},再从托盘退出并重新打开应用,系统会重新询问。注意:本应用是 ad-hoc 签名,每次重装/更新签名都会变,已授予的权限会随之失效,需要按同样步骤再授权一次。\n把插件放在受保护目录之外(例如用 zip 安装,插件会解压到应用数据目录)可以完全避开这个问题。',
+    'error.marketBadLink': '这个链接不是 http(s),已拒绝打开',
     'error.zipTooLarge': 'zip 文件太大,已拒绝解压(上限 {limit} MB)',
     'error.zipUnpackedTooLarge': '解压后的内容超出上限({limit} MB)',
     'error.zipTooManyEntries': 'zip 内条目过多(上限 {limit} 个)',
@@ -144,6 +148,29 @@ const MESSAGES = {
     'plugins.restarted': '服务已重启,插件已生效',
     'plugins.restartFailed': '重启失败: {message}',
     'plugins.removing': '卸载 {name}',
+    'plugins.update': '更新',
+    'plugins.updating': '更新 {name}',
+
+    // Plugin market
+    'market.title': '插件市场',
+    'market.heading': '插件市场',
+    'market.searchPlaceholder': '搜索插件名、作者或描述',
+    'market.refresh': '刷新',
+    'market.loading': '正在加载插件市场…',
+    'market.meta': '{source} · 显示 {shown}/{total} · 更新于 {time}',
+    'market.cached': '(离线缓存)',
+    'market.loadFailed': '加载插件市场失败: {message}',
+    'market.refreshFailed': '刷新失败,继续使用缓存: {message}',
+    'market.empty': '没有匹配的插件',
+    'market.more': '只显示前 {shown} 条,继续输入以缩小范围',
+    'market.install': '安装',
+    'market.installed': '已安装',
+    'market.manual': '手动安装',
+    'market.manualHint': '该条目不是 npm 包(或市场尚未核验),请在「已安装」页用 github: spec 手动安装',
+    'market.scripts': '含安装脚本',
+    'market.scriptsHint': '安装过程会执行该包自带的脚本',
+    'market.repo': '仓库',
+    'market.installing': '从市场安装 {name}',
 
     // Loading window
     'loading.starting': '正在启动 DeepSeek Harness…',
@@ -151,7 +178,9 @@ const MESSAGES = {
   },
 
   en: {
-    'menu.plugins': 'Plugins…',
+    'menu.plugins': 'Plugins',
+    'menu.pluginMarket': 'Plugin Market…',
+    'menu.pluginManage': 'Manage Plugins…',
     'menu.settings': 'Settings',
     'menu.language': 'Language',
     'menu.dataDir': 'Data Directory…',
@@ -186,6 +215,7 @@ const MESSAGES = {
     'tray.title': 'Updating {elapsed}',
     'menu.updating': 'Update in progress…',
     'window.plugins': 'Plugins',
+    'window.market': 'Plugin Market',
 
     'button.retry': 'Retry',
     'button.quit': 'Quit',
@@ -225,6 +255,7 @@ const MESSAGES = {
     'error.configProbeTimeout': 'timed out reading the plugin config schema',
     'error.configProbeOutput': 'could not read the config schema for {name} (unexpected probe output)',
     'error.macFileAccess': 'This is really macOS privacy protection: “{app}” has no permission for that location (a protected folder such as Documents, Desktop or Downloads). Turn it on under System Settings → Privacy & Security → Files and Folders; if the app is not listed, run tccutil reset SystemPolicyDocumentsFolder {id} in a terminal, then quit the app from the tray and open it again so macOS asks. Note that this app is ad-hoc signed: its signature changes with every reinstall or update, which invalidates a permission already granted, and it has to be granted again the same way.\nKeeping plugins outside protected folders avoids this entirely — a zip install unpacks into the app data directory.',
+    'error.marketBadLink': 'that link is not http(s) and was not opened',
     'error.zipTooLarge': 'the zip file is too large to unpack (limit {limit} MB)',
     'error.zipUnpackedTooLarge': 'the unpacked contents exceed the limit ({limit} MB)',
     'error.zipTooManyEntries': 'the zip holds too many entries (limit {limit})',
@@ -271,6 +302,28 @@ const MESSAGES = {
     'plugins.restarted': 'server restarted; plugins are live',
     'plugins.restartFailed': 'restart failed: {message}',
     'plugins.removing': 'removing {name}',
+    'plugins.update': 'Update',
+    'plugins.updating': 'updating {name}',
+
+    'market.title': 'Plugin Market',
+    'market.heading': 'Plugin Market',
+    'market.searchPlaceholder': 'Search by name, author or description',
+    'market.refresh': 'Refresh',
+    'market.loading': 'Loading the plugin market…',
+    'market.meta': '{source} · showing {shown}/{total} · updated {time}',
+    'market.cached': '(offline cache)',
+    'market.loadFailed': 'could not load the plugin market: {message}',
+    'market.refreshFailed': 'refresh failed, keeping the cached catalog: {message}',
+    'market.empty': 'No plugin matches',
+    'market.more': 'showing the first {shown}; keep typing to narrow it down',
+    'market.install': 'Install',
+    'market.installed': 'Installed',
+    'market.manual': 'Manual install',
+    'market.manualHint': 'This entry is not an npm package (or the market has not verified it); install it by github: spec from the Installed tab',
+    'market.scripts': 'runs install scripts',
+    'market.scriptsHint': 'Installing executes scripts shipped in the package',
+    'market.repo': 'Repository',
+    'market.installing': 'installing {name} from the market',
 
     'loading.starting': 'Starting DeepSeek Harness…',
     'loading.hint': 'The first launch downloads and installs the dsh runtime, which can take a few minutes',

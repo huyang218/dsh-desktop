@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('dshPlugins', {
   installZip: zipPath => ipcRenderer.invoke('plugins:install-zip', zipPath),
   /** Removes an installed plugin by package name. */
   remove: name => ipcRenderer.invoke('plugins:remove', name),
+  /** Updates an installed plugin to the newest published version. */
+  update: name => ipcRenderer.invoke('plugins:update', name),
+  /** Reads the plugin market catalog; `force` skips the disk cache. */
+  catalog: force => ipcRenderer.invoke('market:catalog', force),
+  /** Opens a catalog link (repository, market page) in the user's browser. */
+  openLink: url => ipcRenderer.invoke('plugins:open-link', url),
   /** Restarts the dsh server so config changes take effect. */
   restart: () => ipcRenderer.invoke('plugins:restart'),
   /** Reads a plugin's config form description: { rowId, fields, error? }. */

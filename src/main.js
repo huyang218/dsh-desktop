@@ -12,7 +12,7 @@
  * tray icon and the Dock bring it back. Quitting (tray menu or Cmd+Q) stops
  * the server process group before exit.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
 import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
 import { resolveLocations, saveLocations } from './locations.js'
+import { DEFAULT_CATALOG_URL, loadCatalog } from './market.js'
 import { getPluginConfigValues, probePluginConfig, setPluginConfig } from './plugin-config.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
@@ -43,9 +44,10 @@ app.setPath('userData', locations.dataDir)
  *   window?: BrowserWindow, tray?: Tray, runtime?: { slot: string, dir: string, version: string },
  *   toolchain?: ReturnType<typeof findToolchain>, quitting: boolean,
  *   restarts: number, restartTimer?: NodeJS.Timeout,
+ *   pluginWindows: Record<string, BrowserWindow>,
  * }}
  */
-const state = { quitting: false, restarts: 0 }
+const state = { quitting: false, restarts: 0, pluginWindows: {} }
 
 // ── Supervision ─────────────────────────────────────────────────────────────
 // The server can die on its own (an OOM abort inside dsh takes the whole
@@ -72,6 +74,10 @@ function initPaths() {
   // Zip-installed plugins live here for good: the profile links to them by
   // path, so this is part of the installation, not a scratch directory.
   paths.pluginsDir = path.join(paths.dshHome, PLUGIN_DIR)
+  // The market catalog is normalized before it is stored, so this file holds
+  // a few hundred entries rather than the multi-megabyte document they came
+  // from. It is a cache: deleting it costs one refresh.
+  paths.marketCache = path.join(userData, 'market-catalog.json')
   // A migrated directory keeps its old dsh-shell.log beside this one; that
   // history is the user's, so it is left alone rather than renamed or removed.
   paths.logDir = locations.logDir
@@ -119,9 +125,7 @@ function applyLocale(id) {
     state.tray.setContextMenu(trayMenu())
     paintTray()
   }
-  if (state.pluginsWindow && !state.pluginsWindow.isDestroyed()) {
-    state.pluginsWindow.reload()
-  }
+  for (const win of pluginWindows()) win.reload()
   if (state.window && !state.window.isDestroyed() && !state.port) {
     // Still on the loading page: reload it so its two strings switch too.
     state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
@@ -433,9 +437,7 @@ const PLUGIN_PROFILE = 'web'
 
 function pluginsLog(line) {
   log(`[plugins] ${line}`)
-  if (state.pluginsWindow && !state.pluginsWindow.isDestroyed()) {
-    state.pluginsWindow.webContents.send('plugins:log', line)
-  }
+  for (const win of pluginWindows()) win.webContents.send('plugins:log', line)
 }
 
 /** Runs `dsh plugin --profile web <args>` with output streamed to the manager. */
@@ -507,21 +509,47 @@ async function withPluginLock(work) {
   }
 }
 
-function openPluginManager() {
-  if (state.pluginsWindow && !state.pluginsWindow.isDestroyed()) {
-    state.pluginsWindow.show()
-    state.pluginsWindow.focus()
+/**
+ * The two plugin windows. They are separate windows rather than two tabs of
+ * one: managing what is installed and shopping for something new are
+ * different jobs, done at different moments, and a market that can only be
+ * reached through the manager is a market hidden inside a settings screen.
+ *
+ * They share one page. Everything around a plugin operation — the command
+ * log, the restart notice, the busy state, the generated config form — is
+ * the same in both, and duplicating that into a second page would mean
+ * maintaining it twice for the sake of which list is on screen.
+ */
+const PLUGIN_WINDOWS = {
+  installed: { title: 'window.plugins', width: 760, height: 640 },
+  market: { title: 'window.market', width: 860, height: 700 },
+}
+
+/** Every plugin window currently open. */
+function pluginWindows() {
+  return Object.values(state.pluginWindows).filter(win => win && !win.isDestroyed())
+}
+
+/** @param {keyof PLUGIN_WINDOWS} mode */
+function openPluginWindow(mode) {
+  const open = state.pluginWindows[mode]
+  if (open && !open.isDestroyed()) {
+    open.show()
+    open.focus()
     return
   }
+  const spec = PLUGIN_WINDOWS[mode]
   const win = new BrowserWindow({
-    width: 760,
-    height: 640,
-    title: t('window.plugins'),
+    width: spec.width,
+    height: spec.height,
+    title: t(spec.title),
     webPreferences: { preload: path.join(here, 'plugins-preload.cjs') },
   })
-  win.loadFile(path.join(assets, 'plugins.html'))
-  win.on('closed', () => { state.pluginsWindow = undefined })
-  state.pluginsWindow = win
+  // The mode is in the URL rather than a message sent after load, so the
+  // first painted frame is already the right window.
+  win.loadFile(path.join(assets, 'plugins.html'), { search: `mode=${mode}` })
+  win.on('closed', () => { delete state.pluginWindows[mode] })
+  state.pluginWindows[mode] = win
 }
 
 function pluginProfileDir() {
@@ -530,7 +558,7 @@ function pluginProfileDir() {
 
 /** Asks for a plugin zip. @returns {Promise<string|null>} null when cancelled */
 async function pickPluginZip() {
-  const { canceled, filePaths } = await dialog.showOpenDialog(state.pluginsWindow, {
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.pluginWindows.installed, {
     title: t('dialog.pickPluginZip'),
     filters: [{ name: 'Zip', extensions: ['zip'] }],
     properties: ['openFile'],
@@ -555,6 +583,25 @@ async function installPluginZip(zipPath) {
   return name
 }
 
+/**
+ * The catalog the market reads. Settable in settings.json for anyone who
+ * curates their own list or prefers another one; there is no UI for it,
+ * because picking a source is not a decision an ordinary install involves.
+ */
+function catalogUrl() {
+  const configured = readSettings().marketCatalogUrl
+  return typeof configured === 'string' && configured.trim() ? configured.trim() : DEFAULT_CATALOG_URL
+}
+
+/** Opens a catalog link in the user's browser, never in an app window. */
+function openMarketLink(url) {
+  const parsed = new URL(String(url))
+  // openExternal hands the string to the OS, which will happily act on
+  // file:// or a custom scheme registered by some other application.
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error(t('error.marketBadLink'))
+  return shell.openExternal(parsed.toString())
+}
+
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
@@ -566,6 +613,25 @@ function registerPluginIpc() {
   ipcMain.handle('plugins:pick-zip', () => pickPluginZip())
   ipcMain.handle('plugins:install-zip', (_event, zipPath) => withPluginLock(() => installPluginZip(String(zipPath))))
   ipcMain.handle('plugins:remove', (_event, name) => withPluginLock(() => runDshPlugin(['remove', String(name)])))
+  // `dsh plugin` forwards to pnpm, so an update is pnpm's own: --latest to
+  // cross the semver range the profile recorded, and minimumReleaseAge=0
+  // because an explicit click should not wait out a publish quarantine.
+  ipcMain.handle('plugins:update', (_event, name) => withPluginLock(
+    () => runDshPlugin(['update', '--latest', '--config.minimumReleaseAge=0', String(name)]),
+  ))
+  ipcMain.handle('plugins:open-link', (_event, url) => openMarketLink(url))
+  // Deliberately outside the plugin lock: reading the catalog changes
+  // nothing, and it must stay available while an install is running.
+  ipcMain.handle('market:catalog', (_event, force) => loadCatalog({
+    url: catalogUrl(),
+    cacheFile: paths.marketCache,
+    force: Boolean(force),
+    log: pluginsLog,
+    // Chromium's stack rather than Node's: it follows the machine's proxy and
+    // PAC settings, which a packaged app launched from Finder or the Start
+    // menu cannot learn from the environment.
+    fetchImpl: net.fetch,
+  }))
   ipcMain.handle('plugins:restart', () => restartServer())
   ipcMain.handle('plugins:config-schema', (_event, name) => probePluginConfig({
     nodeBin: state.toolchain.nodeBin,
@@ -598,9 +664,20 @@ function languageItems() {
   }))
 }
 
+/** The plugin menu's contents: one entry per tab of the plugin window. */
+function pluginItems() {
+  return [
+    { label: t('menu.pluginMarket'), click: () => openPluginWindow('market') },
+    { label: t('menu.pluginManage'), click: () => openPluginWindow('installed') },
+  ]
+}
+
+/**
+ * Everything that is not plugins. Plugins are a menu of their own in the
+ * menu bar; the tray has no menu bar, so it nests the same items instead.
+ */
 function actionItems() {
   return [
-    { label: t('menu.plugins'), click: openPluginManager },
     {
       label: t('menu.settings'),
       submenu: [
@@ -650,6 +727,7 @@ function buildMenu() {
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: t('menu.main'), submenu: actionItems() },
+    { label: t('menu.plugins'), submenu: pluginItems() },
     { label: t('menu.edit'), submenu: editItems() },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -659,6 +737,7 @@ function trayMenu() {
   return Menu.buildFromTemplate([
     { label: t('menu.showWindow'), click: showWindow },
     { type: 'separator' },
+    { label: t('menu.plugins'), submenu: pluginItems() },
     ...actionItems(),
     { type: 'separator' },
     { label: t('menu.quit'), click: () => app.quit() },

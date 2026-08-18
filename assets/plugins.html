@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title data-i18n="plugins.title"></title>
+<title></title>
 <style>
   /* Tokens first, so the two colour schemes differ only in values. The dsh
      web UI follows the system, and a plugin window nailed to dark would look
@@ -95,6 +95,12 @@
   button.small { padding: 6px 11px; font-size: 12px; }
   button.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--surface); }
 
+  /* One panel per window — the manager's list, or the market's — owning the
+     space between the header and the log and scrolling inside it, so the log
+     stays put while a list of hundreds is scrolled. */
+  .panel { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
+  .panel[hidden] { display: none; }
+
   /* Restart notice */
   #restart-bar {
     display: none; align-items: center; gap: 10px; padding: 10px 12px;
@@ -108,7 +114,7 @@
   #list { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
   .plugin {
     display: grid; align-items: center; gap: 2px 9px;
-    grid-template-columns: max-content max-content 1fr max-content max-content;
+    grid-template-columns: max-content max-content 1fr max-content;
     padding: 10px 12px; background: var(--surface);
     border: 1px solid var(--border); border-radius: var(--radius);
     transition: border-color .12s, background .12s;
@@ -121,14 +127,49 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  .plugin .settings { grid-area: 1 / 4 / span 2; }
-  .plugin .danger { grid-area: 1 / 5 / span 2; }
+  /* The actions share one cell rather than a column each: a row without an
+     update button would otherwise leave an empty column and stop lining up
+     with the rows that have one. */
+  .plugin .actions { grid-area: 1 / 4 / span 2; display: flex; gap: 8px; }
   .badge {
     font-size: 11px; padding: 2px 8px; border-radius: 999px;
     background: var(--ok-bg); color: var(--ok-text); white-space: nowrap;
   }
   .badge.off { background: var(--idle-bg); color: var(--idle-text); }
   .empty { color: var(--text-faint); padding: 28px; text-align: center; }
+
+  /* Market entries: the same row shape as an installed plugin, with the
+     description and provenance beneath and the action pinned right. */
+  #market-list { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; }
+  .entry {
+    display: grid; align-items: center; gap: 3px 9px;
+    grid-template-columns: max-content max-content 1fr max-content;
+    padding: 10px 12px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    transition: border-color .12s;
+  }
+  .entry:hover { border-color: var(--border-strong); }
+  .entry .name { grid-area: 1 / 1; font-weight: 600; }
+  .entry .stars { grid-area: 1 / 2; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+  .entry .badges { grid-area: 1 / 3; display: flex; gap: 5px; flex-wrap: wrap; }
+  .entry .action { grid-area: 1 / 4 / span 3; justify-self: end; }
+  .entry .desc {
+    grid-area: 2 / 1 / auto / 4; font-size: 12px; color: var(--text-muted);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .entry .meta {
+    grid-area: 3 / 1 / auto / 4; font-size: 11px; color: var(--text-faint);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-text); }
+  .badge.kind { background: var(--accent-soft); color: var(--accent); }
+  /* Links open in the user's browser, so they are buttons, not anchors. */
+  .link {
+    padding: 0; border: none; background: none; color: var(--accent);
+    font-size: 11px; text-decoration: underline; text-underline-offset: 2px;
+  }
+  .link:hover:not(:disabled) { background: none; filter: brightness(1.15); }
 
   /* Log */
   #log {
@@ -183,20 +224,30 @@
 </head>
 <body>
   <header>
-    <h1 data-i18n="plugins.heading"></h1>
+    <h1 id="heading"></h1>
     <span class="chip">web profile</span>
   </header>
-  <div class="row">
-    <input id="spec" data-i18n-placeholder="plugins.specPlaceholder" spellcheck="false">
-    <button class="primary" id="install" data-i18n="plugins.install"></button>
-    <button id="install-zip" data-i18n="plugins.installZip"></button>
-  </div>
-  <div class="hint" data-i18n="plugins.hint"></div>
   <div id="restart-bar">
     <span style="flex:1" data-i18n="plugins.restartNotice"></span>
     <button class="primary small" id="restart" data-i18n="button.restartService"></button>
   </div>
-  <div id="list"><div class="empty" data-i18n="plugins.loading"></div></div>
+  <section class="panel" id="panel-installed">
+    <div class="row">
+      <input id="spec" data-i18n-placeholder="plugins.specPlaceholder" spellcheck="false">
+      <button class="primary" id="install" data-i18n="plugins.install"></button>
+      <button id="install-zip" data-i18n="plugins.installZip"></button>
+    </div>
+    <div class="hint" data-i18n="plugins.hint"></div>
+    <div id="list"><div class="empty" data-i18n="plugins.loading"></div></div>
+  </section>
+  <section class="panel" id="panel-market" hidden>
+    <div class="row">
+      <input id="market-search" data-i18n-placeholder="market.searchPlaceholder" spellcheck="false">
+      <button id="market-refresh" data-i18n="market.refresh"></button>
+    </div>
+    <div class="hint" id="market-meta"></div>
+    <div id="market-list"></div>
+  </section>
   <pre id="log"></pre>
   <div id="modal-mask">
     <div id="modal">
@@ -250,34 +301,58 @@
     // spec field working rather than offering a button that cannot answer.
     const zipSupported = typeof dshPlugins.pickZip === 'function'
     if (!zipSupported) $('install-zip').style.display = 'none'
+    const updateSupported = typeof dshPlugins.update === 'function'
+
+    // Which of the two plugin windows this is. One page serves both: the log,
+    // the restart notice, the busy state and the config form are the same in
+    // either, and only the list above them differs.
+    const isMarket = new URLSearchParams(location.search).get('mode') === 'market'
+      && typeof dshPlugins.catalog === 'function'
+    document.title = t(isMarket ? 'market.title' : 'plugins.title')
+    $('heading').textContent = t(isMarket ? 'market.heading' : 'plugins.heading')
+    $('panel-installed').hidden = isMarket
+    $('panel-market').hidden = !isMarket
 
     function setBusy(value) {
       busy = value
-      for (const b of document.querySelectorAll('button')) b.disabled = value
+      // Tabs and links stay live: switching view or opening a repository page
+      // does not touch the profile, and freezing them makes a long install
+      // feel like a hung window.
+      for (const b of document.querySelectorAll('button:not(.tab):not(.link)')) b.disabled = value
     }
 
+    /** The installed plugins, as of the last refresh; the market reads it too. */
+    let installed = []
+
     async function refresh() {
-      const plugins = await dshPlugins.list()
+      installed = await dshPlugins.list()
       const list = $('list')
       list.textContent = ''
-      if (plugins.length === 0) {
+      if (installed.length === 0) {
         list.innerHTML = `<div class="empty">${t('plugins.empty')}</div>`
-        return
       }
-      for (const p of plugins) {
+      for (const p of installed) {
         const row = document.createElement('div')
         row.className = 'plugin'
         const badge = p.active
           ? `<span class="badge">${t('plugins.badgeActive')}</span>`
           : `<span class="badge off">${t('plugins.badgeInactive')}</span>`
-        row.innerHTML = `<span class="name"></span>${badge}<span class="meta"></span>`
-          + `<button class="settings small">${t('plugins.settings')}</button><button class="danger small">${t('plugins.remove')}</button>`
+        // Only a registry dependency can be updated: a link:, file: or git
+        // spec resolves to something the user, not npm, decides the version of.
+        const updatable = updateSupported && !/^(?:link:|file:|github:|git\+|https?:|\.{0,2}\/)/.test(p.spec)
+        row.innerHTML = `<span class="name"></span>${badge}<span class="meta"></span><span class="actions">`
+          + (updatable ? `<button class="update small">${t('plugins.update')}</button>` : '')
+          + `<button class="settings small">${t('plugins.settings')}</button>`
+          + `<button class="danger small">${t('plugins.remove')}</button></span>`
         row.querySelector('.name').textContent = p.name
         row.querySelector('.meta').textContent = `${p.version ?? '?'} · ${p.spec}`
+        row.querySelector('.update')?.addEventListener('click', () => run(() => dshPlugins.update(p.name), t('plugins.updating', { name: p.name })))
         row.querySelector('.settings').addEventListener('click', () => openConfig(p.name))
         row.querySelector('.danger').addEventListener('click', () => run(() => dshPlugins.remove(p.name), t('plugins.removing', { name: p.name })))
         list.appendChild(row)
       }
+      // An install or removal changes what the market should offer.
+      if (isMarket && market) renderMarket()
     }
 
     async function run(op, label) {
@@ -454,6 +529,129 @@
       await install(() => dshPlugins.installZip(zipPath), t('plugins.installingZip', { file }))
     })
     $('spec').addEventListener('keydown', e => { if (e.key === 'Enter') $('install').click() })
+
+    // ── Market: a curated catalog, read by the shell and installed through
+    // the same `dsh plugin add` as everything else. ──
+
+    /** Rows rendered at once; the rest waits behind a narrower search. */
+    const MARKET_ROWS = 80
+    let market = null
+
+    /** The catalog carries both languages when it has them. */
+    const localized = map => (locale.startsWith('zh') ? map.zh ?? map.en : map.en ?? map.zh) ?? ''
+
+    const stars = value => (value < 1000
+      ? String(value)
+      : `${value < 100_000 ? (value / 1000).toFixed(1) : Math.round(value / 1000)}k`)
+
+    async function loadMarket(force) {
+      if (!market) $('market-list').innerHTML = `<div class="empty">${t('market.loading')}</div>`
+      try {
+        market = await dshPlugins.catalog(force)
+        // A refresh that failed with a cache in hand still returns the cache.
+        if (market.error) appendLog(`✘ ${t('market.refreshFailed', { message: market.error })}`)
+      } catch (error) {
+        $('market-list').innerHTML = ''
+        $('market-meta').textContent = ''
+        appendLog(`✘ ${t('market.loadFailed', { message: error.message })}`)
+        return
+      }
+      renderMarket()
+    }
+
+    function renderMarket() {
+      const query = $('market-search').value.trim().toLowerCase()
+      const matches = market.entries.filter(entry => query === '' || [
+        entry.name, entry.owner, entry.npm ?? '', localized(entry.description),
+      ].join(' ').toLowerCase().includes(query))
+      // Installable first, each group keeping the catalog's own order (stars
+      // descending): what the user can act on with one click comes first.
+      const ordered = [...matches].sort((a, b) => Number(b.installable) - Number(a.installable))
+      const shown = ordered.slice(0, MARKET_ROWS)
+
+      $('market-meta').textContent = t('market.meta', {
+        source: market.source?.name ?? new URL(market.url).hostname,
+        shown: shown.length,
+        total: market.entries.length,
+        time: new Date(market.fetchedAt).toLocaleString(locale),
+      }) + (market.cached ? ` ${t('market.cached')}` : '')
+
+      const list = $('market-list')
+      list.textContent = ''
+      if (shown.length === 0) {
+        list.innerHTML = `<div class="empty">${t('market.empty')}</div>`
+        return
+      }
+      const names = new Set(installed.map(p => p.name))
+      for (const entry of shown) list.appendChild(marketRow(entry, names.has(entry.npm)))
+      if (ordered.length > shown.length) {
+        const more = document.createElement('div')
+        more.className = 'empty'
+        more.textContent = t('market.more', { shown: shown.length })
+        list.appendChild(more)
+      }
+    }
+
+    /**
+     * One catalog entry. Everything here is remote text, so it is written
+     * with textContent and never parsed as markup.
+     */
+    function marketRow(entry, isInstalled) {
+      const row = document.createElement('div')
+      row.className = 'entry'
+      row.innerHTML = '<span class="name"></span><span class="stars"></span>'
+        + '<span class="badges"></span><span class="action"></span>'
+        + '<div class="desc"></div><div class="meta"></div>'
+      row.querySelector('.name').textContent = entry.name
+      row.querySelector('.stars').textContent = entry.stars ? `★ ${stars(entry.stars)}` : ''
+      row.querySelector('.desc').textContent = localized(entry.description)
+
+      const badges = row.querySelector('.badges')
+      badges.appendChild(badge(entry.kind, 'kind'))
+      // Install scripts run arbitrary code from the package at install time;
+      // the catalog knows which packages have them, so say so before the click.
+      if (entry.runsInstallScripts) badges.appendChild(badge(t('market.scripts'), 'warn', t('market.scriptsHint')))
+
+      // The repository path, not owner + display name: catalog names carry
+      // spaces and capitals that no repository has.
+      const repo = new URL(entry.url).pathname.replace(/^\/|\/$/g, '')
+      const meta = [repo, entry.npm, entry.license, entry.language]
+      const metaLine = row.querySelector('.meta')
+      metaLine.textContent = meta.filter(Boolean).join(' · ') + ' · '
+      const link = document.createElement('button')
+      link.className = 'link'
+      link.textContent = t('market.repo')
+      link.addEventListener('click', () => dshPlugins.openLink(entry.page ?? entry.url))
+      metaLine.appendChild(link)
+
+      const action = row.querySelector('.action')
+      if (isInstalled) {
+        action.appendChild(badge(t('market.installed')))
+      } else if (entry.installable) {
+        const button = document.createElement('button')
+        button.className = 'primary small'
+        button.textContent = t('market.install')
+        button.disabled = busy
+        button.addEventListener('click', () => install(
+          () => dshPlugins.install(entry.npm), t('market.installing', { name: entry.npm }),
+        ))
+        action.appendChild(button)
+      } else {
+        action.appendChild(badge(t('market.manual'), 'off', t('market.manualHint')))
+      }
+      return row
+    }
+
+    function badge(text, variant = '', title = '') {
+      const span = document.createElement('span')
+      span.className = `badge ${variant}`.trim()
+      span.textContent = text
+      if (title) span.title = title
+      return span
+    }
+
+    $('market-search').addEventListener('input', () => { if (market) renderMarket() })
+    $('market-refresh').addEventListener('click', () => loadMarket(true))
     $('restart').addEventListener('click', async () => {
       setBusy(true)
       appendLog(`▶ ${t('plugins.restarting')}`)
@@ -468,7 +666,10 @@
       }
     })
 
+    // The installed list is read in both windows: the market needs it to know
+    // what is already installed, even though it never renders that list.
     refresh()
+    if (isMarket) loadMarket(false)
   </script>
 </body>
 </html>

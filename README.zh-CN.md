@@ -27,7 +27,8 @@
 | **启动可恢复** | 服务未在就绪时限内应答时提供重试,而不是直接结束应用:磁盘繁忙时它通常只是慢,并没有坏。 |
 | **存储** | `DSH_HOME` 指向应用数据目录内部,profiles、会话与设置全部归应用管理。菜单可直接打开数据目录与日志。 |
 | **内置工具链** | 打包版自带 Node 运行时,目标机器无需预装任何东西。源码运行时回退为在本机查找 Node ≥ 22(PATH、nvm、Homebrew、`%ProgramFiles%`),这也顺带绕开了 GUI 应用不继承 shell `PATH` 的问题。 |
-| **插件管理** | 在窗口里安装、卸载 `dsh` 插件:npm 包名、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并镜像进 `cordis.patch.yml` 中带标记的托管块。 |
+| **插件管理** | 在窗口里安装、更新、卸载 `dsh` 插件:npm 包名、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并镜像进 `cordis.patch.yml` 中带标记的托管块。 |
+| **插件市场** | 独立窗口(菜单「插件 → 插件市场…」):读取 [DSH Market](https://dshplugin.market/) 的目录,可搜索、看星标与描述,一键安装。目录在本地缓存(6 小时内不再联网,可手动刷新),离线也能浏览。只有市场已核验、且从 npm 分发的条目提供一键安装;git 来源的条目只给出仓库链接,需要自行在「已安装」页手动安装。换源见[数据位置](#数据位置)中的 `marketCatalogUrl`。 |
 
 ## 从源码运行
 
@@ -113,7 +114,8 @@ dist\
 
 | 项 | 作用 |
 |---|---|
-| 插件管理… | 安装、卸载、配置 `dsh` 插件 |
+| 插件 → 插件市场… | 浏览目录、搜索、一键安装 |
+| 插件 → 插件管理… | 安装、更新、配置、卸载已安装的插件 |
 | 检查更新 | 双槽位更新,自检通过后询问是否重启 |
 | 重启服务 | 停掉当前服务进程树,以同一版本重新启动 |
 | 打开数据目录 / 打开日志 | |
@@ -130,8 +132,18 @@ dsh-desktop/
 ├── runtime/            已安装的 dsh:slot-a | slot-b、current.json
 ├── node-runtime/       内置 Node(仅打包版)
 ├── dsh-home/           DSH_HOME:profiles、会话、设置
+│   └── plugins/        zip 安装的插件解压于此(profile 以 link: 指向)
+├── market-catalog.json 插件市场目录缓存,删掉只会多刷新一次
+├── settings.json       语言、插件市场源等外壳设置
 └── dsh-desktop.log     应用与服务日志
 ```
+
+`settings.json` 里可选的键:
+
+| 键 | 作用 |
+|---|---|
+| `locale` | 界面语言,菜单里切换时写入 |
+| `marketCatalogUrl` | 插件市场目录地址,默认 `https://dshplugin.market/plugins.json`。换成自建或其他目录(例如 `https://awesome-dsh-plugin.com/plugins.json`)即可,改完在市场页点「刷新」。 |
 
 ## 平台支持
 
