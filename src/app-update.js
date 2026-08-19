@@ -22,8 +22,10 @@
  * Deliberately free of Electron imports; the caller injects fetch.
  */
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises'
+import { createWriteStream } from 'node:fs'
+import { mkdir, mkdtemp, readdir, readFile, rm, unlink } from 'node:fs/promises'
 import path from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { activate, isCompatible, readManifest } from './shell-bundle.js'
 import { extractZip } from './zip.js'
 import { t } from './i18n.js'
@@ -37,6 +39,12 @@ const MANIFEST_ASSET = 'shell-update.json'
 const REQUEST_TIMEOUT_MS = 30_000
 /** A shell bundle is ~100KB; an installer is ~200MB. */
 const MAX_BUNDLE_BYTES = 32 * 1024 * 1024
+/**
+ * Generous by design: the point is not to police the release, it is that an
+ * installer download now goes to disk, so a response that never ends would
+ * otherwise fill it.
+ */
+const MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
 
 /**
  * Compares two dotted version strings.
@@ -146,10 +154,9 @@ export async function stageShellUpdate({ release, manifest, shellDir, fetchImpl 
   const staging = await mkdtemp(path.join(shellDir, '.staging-'))
   try {
     const archive = path.join(staging, 'bundle.zip')
-    const bytes = await download(asset.url, archive, { fetchImpl, onProgress, maxBytes: MAX_BUNDLE_BYTES })
-    const digest = createHash('sha256').update(bytes).digest('hex')
-    if (digest !== manifest.sha256) throw new Error(t('error.updateChecksum'))
-    log?.(`shell ${manifest.version}: ${bytes.length} bytes verified`)
+    const { bytes, sha256 } = await download(asset.url, archive, { fetchImpl, onProgress, maxBytes: MAX_BUNDLE_BYTES })
+    if (sha256 !== manifest.sha256) throw new Error(t('error.updateChecksum'))
+    log?.(`shell ${manifest.version}: ${bytes} bytes verified`)
 
     const unpacked = path.join(staging, 'bundle')
     await extractZip(archive, unpacked, { log })
@@ -191,7 +198,7 @@ export async function downloadInstaller({ release, dir, fetchImpl = fetch, onPro
     if (stale !== asset.name) await unlink(path.join(dir, stale)).catch(() => {})
   }
   const file = path.join(dir, asset.name)
-  await download(asset.url, file, { fetchImpl, onProgress })
+  await download(asset.url, file, { fetchImpl, onProgress, maxBytes: MAX_INSTALLER_BYTES })
   log?.(`downloaded ${asset.name} to ${dir}`)
   return file
 }
@@ -206,11 +213,17 @@ async function getJson(url, fetchImpl) {
 }
 
 /**
- * Streams a download to disk, reporting progress, and returns the bytes.
+ * Streams a download to disk, reporting progress, and returns its size and
+ * digest.
  *
- * Kept in memory as well as on disk because the only two things downloaded
- * here are a small archive that must be hashed and an installer whose size
- * is checked; the cap keeps the first honest.
+ * Nothing is held in memory. An installer is a couple of hundred megabytes,
+ * and buffering one so its digest could be taken at the end put that much —
+ * twice, while the chunks were joined — in the main process, where running
+ * out is not an exception anyone catches but an abort that takes the window,
+ * the tray and the log with it. Hashing as the bytes go past costs nothing
+ * and needs none of them kept.
+ *
+ * @returns {Promise<{bytes: number, sha256: string}>}
  */
 async function download(url, file, { fetchImpl, onProgress, maxBytes }) {
   const response = await withTimeout(signal => fetchImpl(url, { redirect: 'follow', signal }))
@@ -218,17 +231,23 @@ async function download(url, file, { fetchImpl, onProgress, maxBytes }) {
   const total = Number(response.headers.get('content-length')) || 0
   if (maxBytes && total > maxBytes) throw new Error(t('error.updateTooLarge'))
 
-  const chunks = []
+  const hash = createHash('sha256')
   let received = 0
-  for await (const chunk of response.body) {
-    received += chunk.length
-    if (maxBytes && received > maxBytes) throw new Error(t('error.updateTooLarge'))
-    chunks.push(chunk)
-    onProgress?.(received, total)
-  }
-  const bytes = Buffer.concat(chunks)
-  await writeFile(file, bytes)
-  return bytes
+  await pipeline(
+    async function* () {
+      for await (const chunk of response.body) {
+        received += chunk.length
+        // A server that lies about content-length, or sends none, is still
+        // held to the cap.
+        if (maxBytes && received > maxBytes) throw new Error(t('error.updateTooLarge'))
+        hash.update(chunk)
+        onProgress?.(received, total)
+        yield chunk
+      }
+    },
+    createWriteStream(file),
+  )
+  return { bytes: received, sha256: hash.digest('hex') }
 }
 
 /** The request timeout applies to reaching the server, not to the transfer. */
