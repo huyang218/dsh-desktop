@@ -231,8 +231,37 @@ async function chooseLogDir() {
 function log(line) {
   const stamped = `[${new Date().toISOString()}] ${line}\n`
   try {
-    appendFileSync(paths.logFile, stamped)
+    // The fallback matters for the crash handlers below: they are registered
+    // before initPaths() runs, and a crash that happens first is exactly the
+    // one worth having on disk.
+    appendFileSync(paths.logFile ?? path.join(locations.logDir, 'dsh-desktop.log'), stamped)
   } catch { /* logging must never take the shell down */ }
+}
+
+/**
+ * Last resort for a throw nobody caught.
+ *
+ * Without this the main process simply dies: no dialog, no log line, and —
+ * because the server is spawned detached — an orphaned dsh tree left holding
+ * DSH_HOME and its port for the next launch to collide with. The app still
+ * ends, because the state after an uncaught throw is not one to keep running
+ * in, but it ends on the record and it takes its server with it.
+ *
+ * @param {string} label which handler fired
+ * @param {unknown} reason the error or rejection value
+ */
+let crashing = false
+function crash(label, reason) {
+  // A second throw while shutting down must not restart the shutdown.
+  if (crashing) return
+  crashing = true
+  log(`FATAL ${label}: ${reason?.stack ?? reason}`)
+  const child = state.child
+  state.quitting = true
+  state.child = undefined
+  const exit = () => app.exit(1)
+  if (child) stopServer(child).finally(exit)
+  else exit()
 }
 
 /**
@@ -1726,16 +1755,41 @@ async function main() {
   setTimeout(() => { updateApp({ silent: true }).catch(error => log(`silent update check: ${error?.message ?? error}`)) }, 30_000)
 }
 
+process.on('uncaughtException', reason => crash('uncaught exception', reason))
+// Deliberately not fatal, unlike the line above: a throw leaves the main
+// process in a state not worth continuing in, but a rejection nobody awaited
+// is usually one isolated async path — and ending a resident app with a live
+// server over it costs the user more than the bug does. Registering this
+// listener is what stops Node from ending the process itself; the log line is
+// the point.
+process.on('unhandledRejection', reason => {
+  log(`unhandled rejection: ${reason?.stack ?? reason}`)
+})
+
 // One instance only: two of these would run two servers over one DSH_HOME.
 // The second instance is also how Windows delivers a "Send to" selection —
 // its arguments are wanted even though the process itself is not, which
 // registerFileHandoff() reads out of the event.
 const locked = app.requestSingleInstanceLock()
 if (!locked) {
+  // Said out loud because this is the one exit that leaves no other trace,
+  // and an app that disappeared on its own and an app that was a second
+  // instance handing over look identical from the outside.
+  log('another instance owns the lock; handing over and exiting')
   app.quit()
 } else {
   app.on('second-instance', showWindow)
   app.on('activate', showWindow)
+  // Diagnostics only, and the counterpart to the handlers above: a renderer
+  // or utility process dying does not end the app, so it leaves no trace at
+  // all unless it is written down. "The window went blank" and "the app
+  // vanished" are the same report from a user, and this tells them apart.
+  app.on('render-process-gone', (_event, _contents, details) => {
+    log(`renderer gone: reason=${details.reason} exitCode=${details.exitCode}`)
+  })
+  app.on('child-process-gone', (_event, details) => {
+    log(`child process gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`)
+  })
   // The tray owns app lifetime: a hidden window with a live server is the
   // resident state, so closing windows never quits by itself.
   app.on('window-all-closed', () => {})
