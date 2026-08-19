@@ -43,6 +43,8 @@ npm start
 
 首次启动会从 npm 安装 `@deepseek-ai/dsh@latest`(需要网络,耗时几分钟)。数据与日志见[数据位置](#数据位置)。
 
+macOS 上,源码运行的进程住在 `node_modules` 里那个未品牌化的 Electron.app 中,所以程序坞悬停显示的名字是 **Electron**——这是正常的,不是装错了。图标已在运行时换成应用自己的;名字来自那个 bundle,只有安装包里的应用才是对的。
+
 ### 如果 `npm install` 卡在下载 Electron
 
 electron 包的 postinstall 会从 GitHub Releases 拉取约 100MB 的运行时,**这一步不走 npm registry**——只改 registry 不解决问题。当网络无法访问 GitHub 或被重置时(表现为 `node_modules/electron` 下的 `RequestError: read ECONNRESET`),把两个下载器都指向镜像。

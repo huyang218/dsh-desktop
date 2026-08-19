@@ -44,6 +44,8 @@ npm start
 
 The first launch installs `@deepseek-ai/dsh@latest` from npm (needs network, takes a few minutes). Data and logs live in the [data directory](#data-locations).
 
+On macOS a source run lives inside the unbranded Electron.app under `node_modules`, so the Dock tooltip reads **Electron**. That is expected, not a broken install. The icon is replaced at runtime; the name comes from that bundle, and only an installed build carries the right one.
+
 ### If `npm install` fails downloading Electron
 
 Electron's postinstall fetches a ~100 MB runtime from GitHub Releases, which does **not** go through the npm registry — changing the registry alone will not fix it. On a network where GitHub is unreachable or reset (`RequestError: read ECONNRESET` under `node_modules/electron`), point both downloaders at a mirror.

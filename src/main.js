@@ -49,6 +49,12 @@ import { formatPaths, insertionScript, pathsFromArgv } from './send-to-chat.js'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
 
+// Only the packaged bundle carries the product name in its Info.plist; run
+// from source, Electron falls back to the package name and the app menu reads
+// "dsh-desktop". Safe to set because the data directory is pinned explicitly
+// on the next line rather than derived from this name.
+app.setName('DeepSeek Harness')
+
 const locations = resolveLocations(app.getPath('appData'))
 app.setPath('userData', locations.dataDir)
 
@@ -1629,6 +1635,10 @@ function setUpdatePhase(phase, params = {}) {
 
 async function main() {
   initPaths()
+  // Run from source, the Dock shows the unbranded Electron.app this process
+  // actually lives in. The icon is the half that can be fixed at runtime; the
+  // Dock's tooltip stays "Electron" because it comes from that bundle.
+  if (!app.isPackaged) app.dock?.setIcon(path.join(assets, 'icon-1024.png'))
   // A saved choice wins; otherwise follow the system language, so a fresh
   // install opens in the user's own rather than in a default.
   setLocale(readSettings().locale ?? resolveLocale(app.getLocale()))
