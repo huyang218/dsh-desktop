@@ -50,8 +50,11 @@ const MAX_INSTALLER_BYTES = 1024 * 1024 * 1024
  * Compares two dotted version strings.
  *
  * Numeric fields only, and a version with a `-rc.1` style suffix sorts below
- * the same version without one. That is the whole of semver this app can
- * produce, and inventing the rest would be code no release exercises.
+ * the same version without one. Prerelease suffixes are compared segment by
+ * segment with numeric segments compared as numbers, because this also ranks
+ * dsh's and the plugins' versions, not just the app's own: as a string,
+ * `rc.10` sorts below `rc.7` and an update would go unnoticed for the whole
+ * of a release series' second decade.
  *
  * @returns {number} negative when a < b, 0 when equal, positive when a > b
  */
@@ -69,7 +72,30 @@ export function compareVersions(a, b) {
   if (left.pre === right.pre) return 0
   if (left.pre === '') return 1
   if (right.pre === '') return -1
-  return left.pre < right.pre ? -1 : 1
+  return comparePrerelease(left.pre, right.pre)
+}
+
+/**
+ * Ranks two prerelease suffixes the way semver does: dot-separated segments,
+ * numeric ones ordered as numbers and below any non-numeric one, and a suffix
+ * that runs out of segments first sorting lower.
+ *
+ * @returns {number} negative when a < b, 0 when equal, positive when a > b
+ */
+function comparePrerelease(a, b) {
+  const left = a.split('.')
+  const right = b.split('.')
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    if (left[i] === undefined) return -1
+    if (right[i] === undefined) return 1
+    if (left[i] === right[i]) continue
+    const leftNum = /^\d+$/.test(left[i])
+    const rightNum = /^\d+$/.test(right[i])
+    if (leftNum && rightNum) return Number(left[i]) - Number(right[i])
+    if (leftNum !== rightNum) return leftNum ? -1 : 1
+    return left[i] < right[i] ? -1 : 1
+  }
+  return 0
 }
 
 /**

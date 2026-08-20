@@ -109,23 +109,68 @@ export async function installIntoSlot({ toolchain, dir, spec = `${DSH_PACKAGE}@l
 }
 
 /**
- * Asks the registry what the newest published version is.
+ * The update channels, named by the dist-tags dsh publishes under.
+ *
+ * `latest` is where a release lands once it is meant for everyone; `next`
+ * carries the newest build, which for a package still in `-rc` is often the
+ * only place a new version appears for days.
+ */
+export const CHANNELS = ['latest', 'next']
+
+/** @param {string} channel @returns {string} a channel, whatever came in */
+export function normalizeChannel(channel) {
+  return CHANNELS.includes(channel) ? channel : CHANNELS[0]
+}
+
+/**
+ * Asks the registry what a channel currently points at.
  *
  * A metadata query rather than an install: checking for an update should cost
  * one request, not a full download into a slot. The install that may follow
- * pins this exact version, so a release landing in between cannot swap what
- * the user agreed to.
+ * pins the exact version this returned, so a release landing in between cannot
+ * swap what the user agreed to.
+ *
+ * All the dist-tags come back in that one request, so the channel is resolved
+ * here rather than by asking for `pkg@next` and having npm fail the whole
+ * check when that tag does not exist — an empty channel falls back to `latest`
+ * and says so.
  *
  * @param {object} options
  * @param {{ nodeBin: string, npmCli: string, nodeDir: string }} options.toolchain
  * @param {string} [options.packageName]
- * @returns {Promise<string>} the version `@latest` currently resolves to
+ * @param {string} [options.channel]
+ * @returns {Promise<{ version: string, channel: string, tags: Record<string, string> }>}
+ *   the version, the channel it actually came from, and every tag the request
+ *   returned — the caller can say what the other channel holds without asking
+ *   again
  */
-export async function latestVersion({ toolchain, packageName = DSH_PACKAGE }) {
+export async function channelVersion({ toolchain, packageName = DSH_PACKAGE, channel = CHANNELS[0] }) {
+  const wanted = normalizeChannel(channel)
+  const raw = await npmOutput(toolchain, ['view', packageName, 'dist-tags', '--json'])
+  let tags
+  try {
+    tags = JSON.parse(raw)
+  } catch {
+    throw new Error(t('error.npmNoDistTags', { package: packageName }))
+  }
+  for (const from of [wanted, CHANNELS[0]]) {
+    if (typeof tags?.[from] === 'string') return { version: tags[from], channel: from, tags }
+  }
+  throw new Error(t('error.npmNoDistTags', { package: packageName }))
+}
+
+/**
+ * Runs npm and returns its stdout, rejecting with whatever it said on stderr.
+ *
+ * @param {{ nodeBin: string, npmCli: string, nodeDir: string }} toolchain
+ * @param {string[]} args
+ * @returns {Promise<string>}
+ */
+function npmOutput(toolchain, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       toolchain.nodeBin,
-      [toolchain.npmCli, 'view', `${packageName}@latest`, 'version', '--loglevel=error'],
+      [toolchain.npmCli, ...args, '--loglevel=error'],
       { env: childEnv(toolchain), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     )
     let out = ''
@@ -136,8 +181,8 @@ export async function latestVersion({ toolchain, packageName = DSH_PACKAGE }) {
     child.stderr.on('data', chunk => { err = (err + chunk).slice(-400) })
     child.on('error', reject)
     child.on('exit', code => {
-      const version = out.trim()
-      if (code === 0 && version) return resolve(version)
+      const trimmed = out.trim()
+      if (code === 0 && trimmed) return resolve(trimmed)
       reject(new Error(err.trim() || t('error.npmExit', { code })))
     })
   })

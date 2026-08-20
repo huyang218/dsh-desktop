@@ -23,6 +23,7 @@ The repository is named `dsh-desktop`; the packaged application is named **DeepS
 | | |
 |---|---|
 | **Dual-slot updates** | The runtime is installed by npm into `runtime/slot-a` or `slot-b`, with `current.json` naming the active one. An update installs into the idle slot, boots a probe server against it, and only moves the pointer once that self-test passes — a failed upgrade leaves the working version untouched. The previous version stays in the other slot, and one menu item goes back to it — no network, no reinstall. |
+| **Update channels** | `dsh` publishes a new build to npm's `next` dist-tag first and moves `latest` later, so a version can be plainly released and still be invisible to anyone tracking `latest`. Stable follows `latest`, Preview follows `next`, and the check reads both tags in the one request it already makes — so being up to date on Stable can say that Preview holds something newer, rather than leaving that as a puzzle. A channel that points *below* the installed version offers the move down as what it is, and the self-test and the other slot apply to it exactly as they do to an upgrade. |
 | **App self-update** | The version here against the newest GitHub release, in two flavours. A **hot update**, when the new version only changes the shell (JavaScript and markup): a few hundred KB into the data directory, live after a restart, with the installed app bundle untouched — so its signature, and the privacy permissions macOS binds to it, survive. An **installer update**, when Electron or the bundled runtime changed: the app downloads the installer and hands it to you. Checked once, quietly, after startup, and from the menu whenever you like. |
 | **Process ownership** | The server starts with the window on a random free port and loads once it answers HTTP 200. It runs in its own process group (POSIX) or job tree (Windows), and the whole tree is terminated when the app quits — no orphans. |
 | **Supervision** | An unplanned exit — including an OOM abort, which arrives as a signal rather than an exit code — is restarted automatically, backing off 1s/3s/8s. Three consecutive failures raise a dialog instead of spinning. A server that stays up for a minute earns a fresh budget, so an occasional crash always gets the full three attempts. |
@@ -140,8 +141,9 @@ A few Windows differences in the newer features, handled in the implementation: 
 | Plugins → Plugin Market… | Browse the catalog, search, install with one click |
 | Plugins → Manage Plugins… | Install, update, configure and remove installed plugins |
 | Settings → Proxy… | Network proxy, applied to the app's own requests and to every child process |
+| Settings → Runtime Update Channel | Stable or Preview: which npm dist-tag runtime update checks follow. Stable by default |
 | Check for App Updates | Against the newest release; hot-updates when it can, downloads the installer when it cannot |
-| Check for Runtime Updates | Dual-slot `dsh` runtime update, with a restart prompt after the self-test passes |
+| Check for Runtime Updates | Dual-slot `dsh` runtime update on the chosen channel, with a restart prompt after the self-test passes |
 | Roll Back to dsh &lt;version&gt; | Switch to the previous version still sitting in the other slot; absent when that slot is empty or holds the same version |
 | Settings → Open at Login / Start in the Tray | The two background-residency switches |
 | Restart service | Stops the current server tree and starts the same version again |

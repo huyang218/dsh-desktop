@@ -39,8 +39,8 @@ import * as proxy from './proxy.js'
 import { confirmBundle, shellDirOf } from './shell-bundle.js'
 import { visibleBounds } from './window-state.js'
 import {
-  activateSlot, DSH_PACKAGE, dshBinPath, ensureRuntime, inactiveSlot,
-  installedVersion, installIntoSlot, latestVersion, readPointer, slotDir,
+  activateSlot, CHANNELS, channelVersion, DSH_PACKAGE, dshBinPath, ensureRuntime,
+  inactiveSlot, installedVersion, installIntoSlot, normalizeChannel, readPointer, slotDir,
 } from './runtime.js'
 import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 import { createSnapshot, inspectSnapshot, restoreSnapshot } from './snapshot.js'
@@ -142,6 +142,11 @@ function writeSettings(patch) {
     log(`could not save settings: ${error?.message ?? error}`)
   }
   return next
+}
+
+/** The dist-tag runtime update checks follow. Stable unless asked otherwise. */
+function runtimeChannel() {
+  return normalizeChannel(readSettings().runtimeChannel)
 }
 
 /**
@@ -447,13 +452,19 @@ function offerRestart(code, signal, detail) {
 }
 
 /**
- * Checks for a newer dsh, and installs it only if the user agrees.
+ * Checks what the chosen channel offers, and installs it only if the user
+ * agrees.
  *
  * The check is a registry lookup, not an install: this used to download the
  * newest version into the idle slot before it could tell you that you already
  * had it — minutes of waiting, and no say in whether to fetch it at all. The
  * install that follows pins the exact version shown, so a release landing
  * mid-flow cannot substitute itself for the one that was agreed to.
+ *
+ * A channel can also point *below* what is installed — switching back to
+ * stable after running a preview build is the ordinary way there. That is
+ * offered too, worded as the move down that it is, because the alternative is
+ * a channel the user selected and the app then refuses to act on.
  */
 async function updateRuntime() {
   if (state.updating) {
@@ -465,24 +476,48 @@ async function updateRuntime() {
     setUpdatePhase('checking')
     const pointer = await readPointer(paths.runtimeBase)
     const current = pointer?.version ?? state.runtime?.version
-    let latest
+    const wanted = runtimeChannel()
+    let offer
     try {
-      latest = await latestVersion({ toolchain: state.toolchain })
+      offer = await channelVersion({ toolchain: state.toolchain, channel: wanted })
     } catch (error) {
       throw new Error(t('error.checkFailed', { message: error?.message ?? error }))
     }
-    log(`update check: installed ${current}, latest ${latest}`)
+    const latest = offer.version
+    log(`update check (${wanted}${offer.channel === wanted ? '' : ` → ${offer.channel}`}): installed ${current}, offered ${latest}`)
     setUpdatePhase(null)
     if (latest === current) {
-      await dialog.showMessageBox(state.window, { message: t('dialog.upToDate', { version: current }) })
+      // The other channel is already in hand from the same request. Saying so
+      // is the difference between "you are up to date" and the puzzle of an
+      // app calling a version current while a newer one is plainly published.
+      const elsewhere = CHANNELS
+        .filter(id => id !== offer.channel)
+        .map(id => ({ id, version: offer.tags?.[id] }))
+        .find(({ version }) => version && compareVersions(version, current) > 0)
+      await dialog.showMessageBox(state.window, {
+        message: t('dialog.upToDate', { version: current }),
+        detail: elsewhere
+          ? t('dialog.newerElsewhere', {
+            version: elsewhere.version, channel: t(`channel.${elsewhere.id}`), menu: t('menu.runtimeChannel'),
+          })
+          : undefined,
+      })
       return
     }
 
+    const older = compareVersions(latest, current) < 0
     const { response: confirm } = await dialog.showMessageBox(state.window, {
       type: 'question',
-      message: t('dialog.updateAvailable', { latest }),
-      detail: t('dialog.updateAvailableDetail', { current }),
-      buttons: [t('button.update'), t('button.cancel')],
+      message: t(older ? 'dialog.downgradeAvailable' : 'dialog.updateAvailable', { latest }),
+      detail: [
+        t(older ? 'dialog.downgradeAvailableDetail' : 'dialog.updateAvailableDetail', { current }),
+        offer.channel === wanted
+          ? t('dialog.fromChannel', { channel: t(`channel.${offer.channel}`) })
+          : t('dialog.channelEmpty', {
+            wanted: t(`channel.${wanted}`), channel: t(`channel.${offer.channel}`),
+          }),
+      ].join('\n\n'),
+      buttons: [t(older ? 'button.switchVersion' : 'button.update'), t('button.cancel')],
       defaultId: 0,
       cancelId: 1,
     })
@@ -514,7 +549,7 @@ async function updateRuntime() {
     setUpdatePhase(null)
 
     const { response } = await dialog.showMessageBox(state.window, {
-      message: t('dialog.updated', { version }),
+      message: t(older ? 'dialog.switched' : 'dialog.updated', { version }),
       detail: t('dialog.updatedDetail'),
       buttons: [t('button.restartService'), t('button.later')],
       defaultId: 0,
@@ -1470,6 +1505,19 @@ function languageItems() {
   }))
 }
 
+/** The update channels, checkmarked for the same reason as the languages. */
+function channelItems() {
+  const active = runtimeChannel()
+  return CHANNELS.map(id => ({
+    label: `${active === id ? '✓' : '  '} ${t(`channel.${id}`)}`,
+    click: () => {
+      writeSettings({ runtimeChannel: id })
+      buildMenu()
+      refreshTrayMenu()
+    },
+  }))
+}
+
 /** The plugin menu's contents: one entry per tab of the plugin window. */
 function pluginItems() {
   return [
@@ -1489,6 +1537,7 @@ function actionItems() {
       submenu: [
         { label: t('menu.language'), submenu: languageItems() },
         { label: t('menu.proxy'), click: openSettingsWindow },
+        { label: t('menu.runtimeChannel'), submenu: channelItems() },
         { type: 'separator' },
         // Checkmarks in the label rather than `type: 'checkbox'`, for the
         // reason spelled out in languageItems(): Electron fires a checked
