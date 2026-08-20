@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Unofficial desktop app for DeepSeek Harness (dsh): installs and updates the runtime, owns the server process and storage, and wraps the web UI in a window.",
   "author": {
