@@ -81,6 +81,7 @@
     },
     "mac": {
       "identity": null,
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "icon": "assets/icon.icns",
       "category": "public.app-category.developer-tools",
       "extendInfo": {

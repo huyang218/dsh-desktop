@@ -202,10 +202,13 @@ export async function stageShellUpdate({ release, manifest, shellDir, fetchImpl 
 
 /** The installer this platform can run, out of a release's assets. */
 export function installerAsset(release, platform = process.platform, arch = process.arch) {
-  const wanted = platform === 'win32'
-    ? name => name.endsWith('.exe')
-    : name => name.endsWith(`-${arch}.dmg`) || name.endsWith('.dmg')
-  return release.assets.find(asset => wanted(asset.name))
+  if (platform === 'win32') return release.assets.find(a => a.name.endsWith('.exe'))
+  // A release carries one dmg per architecture, so the arch-tagged name is
+  // the answer. The fallback is for a dmg that names no architecture at all
+  // — never for another arch's, which would hand an Intel Mac an arm64
+  // installer, and did when this was one OR of two suffix tests.
+  return release.assets.find(a => a.name.endsWith(`-${arch}.dmg`))
+    ?? release.assets.find(a => a.name.endsWith('.dmg') && !/-(arm64|x64)\.dmg$/.test(a.name))
 }
 
 /**

@@ -83,9 +83,9 @@ export ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-b
 
 ### GitHub Actions
 
-`.github/workflows/build.yml` 在两台机器上各打一份:macOS Apple Silicon(`macos-14`)与 Windows(`windows-latest`)。触发方式是手动运行,或推一个 `v*` 标签。
+`.github/workflows/build.yml` 在三台机器上各打一份:macOS Apple Silicon(`macos-14`)、macOS Intel(`macos-15-intel`)与 Windows(`windows-latest`)。触发方式是手动运行,或推一个 `v*` 标签。
 
-矩阵里没有 Intel macOS:`macos-13` 的公共 runner 太紧张,实测连着两次运行都卡在排队,而另外两个平台早已打完。需要 Intel 版就在矩阵里加一行 `os: macos-13`、其余照抄 mac 那行——electron-builder 按宿主机架构决定产物。
+三行,因为打包会快照宿主机:Intel 版的 dmg 必须在 Intel runner 上打。原先承担这件事的 `macos-13` 已经下架,`macos-15-intel` 接替了它,且属于标准 runner,公开仓库免费。两行 mac 的差别只在落到哪台宿主机上——electron-builder 按宿主机架构决定产物。
 
 推标签时,产物直接传到对应的 Release(用 runner 自带的 `gh`,不引入第三方 action)。手动运行默认**不**上传安装包:免费账户的 artifact 存储只有 500MB,而一个 dmg 就 200MB 出头,三个平台会直接撑满;需要产物时在运行对话框里勾选 `upload`,用完记得删。
 

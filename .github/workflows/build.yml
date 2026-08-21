@@ -113,13 +113,23 @@ jobs:
       # One platform failing should not hide whether the others are fine.
       fail-fast: false
       matrix:
-        # No Intel macOS row: the macos-13 runners are scarce enough that the
-        # job sat queued through two whole runs while the others finished. To
-        # build one, add a row with `os: macos-13` and the same mac settings —
-        # electron-builder takes the architecture from the host.
+        # Two macOS rows because packaging snapshots the host: `npm run seed`
+        # copies the runner's own Node binary into the app, so an Intel dmg has
+        # to come off an Intel runner. macos-13, which used to be that
+        # runner, has been retired; macos-15-intel replaces it and is a
+        # standard runner, free on a public repository. electron-builder
+        # takes the architecture from the host, so the two mac rows differ
+        # only in which host they land on.
         include:
           - label: macOS (Apple Silicon)
             os: macos-14
+            script: dist:mac
+            artifacts: dist/*.dmg
+            cache: |
+              ~/Library/Caches/electron
+              ~/Library/Caches/electron-builder
+          - label: macOS (Intel)
+            os: macos-15-intel
             script: dist:mac
             artifacts: dist/*.dmg
             cache: |
@@ -152,8 +162,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ matrix.cache }}
-          key: ${{ runner.os }}-electron-${{ hashFiles('package-lock.json') }}
-          restore-keys: ${{ runner.os }}-electron-
+          # Keyed by architecture too: the two macOS rows share a runner.os
+          # but cache Electron binaries built for different ones.
+          key: ${{ runner.os }}-${{ runner.arch }}-electron-${{ hashFiles('package-lock.json') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-electron-
 
       - run: npm ci
 
