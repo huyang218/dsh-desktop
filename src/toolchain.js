@@ -7,7 +7,7 @@
  * for every spawn (npm runs as `node <npm-cli.js>` so it needs no separate
  * lookup).
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -69,6 +69,8 @@ function candidateDirs() {
     }
     return dirs
   }
+  // What the user's shell would resolve first, then the usual places.
+  dirs.push(...loginShellDirs())
   dirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin')
   dirs.push(...nvmBinDirs())
   return dirs
@@ -172,11 +174,59 @@ export function ensureBundledToolchain({ tarPath, versionFile, destBase, log }) 
 export function childEnv(toolchain, extra = {}) {
   return {
     ...process.env,
-    PATH: [toolchain.nodeDir, process.env.PATH ?? '', ...globalBinDirs()]
+    PATH: [toolchain.nodeDir, process.env.PATH ?? '', ...loginShellDirs(), ...globalBinDirs()]
       .filter(Boolean)
       .join(path.delimiter),
     ...extra,
   }
+}
+
+const PATH_START = '__dsh_path_start__'
+const PATH_END = '__dsh_path_end__'
+
+/** @type {string[] | undefined} the answer, asked for at most once */
+let shellDirs
+
+/**
+ * The PATH the user's own shell would hand a program.
+ *
+ * Every list of likely directories is a guess about how someone installed
+ * their tools, and this machine answers with `.bun/bin`, `.cargo/bin`,
+ * `/usr/local/opt/node@22/bin` and four more that no such list would have
+ * contained. The shell already knows: it is where the user put those
+ * directories, and asking it costs one launch, about half a second, once per
+ * run.
+ *
+ * Login *and* interactive, because PATH is set in `.zshrc` at least as often
+ * as in `.zprofile`. That runs the user's startup files, which is exactly
+ * what a terminal does; the sentinels are there because those files may print
+ * things, and the timeout because one of them may block forever.
+ *
+ * @returns {string[]} the directories, or none when the shell cannot be asked
+ */
+function loginShellDirs() {
+  if (shellDirs) return shellDirs
+  shellDirs = []
+  if (isWindows) return shellDirs
+  // Windows has no equivalent problem to solve: PATH there lives in the
+  // registry, and a GUI app is handed the same one a console gets.
+  const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh')
+  // Braced, because `$PATH__dsh_path_end__` names a variable nobody set and
+  // expands to nothing at all.
+  const script = `echo "${PATH_START}\${PATH}${PATH_END}"`
+  // spawnSync rather than execFileSync: an interactive shell may hand back a
+  // nonzero status from the last thing a startup file did, and the answer is
+  // on stdout either way.
+  const { stdout } = spawnSync(shell, ['-ilc', script], {
+    encoding: 'utf8',
+    timeout: 5_000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  const found = (stdout ?? '').match(new RegExp(`${PATH_START}(.*)${PATH_END}`))
+  // Split on the delimiter alone: a directory here may well have a space in
+  // it, this being macOS.
+  if (found) shellDirs = found[1].split(path.delimiter).filter(Boolean)
+  return shellDirs
 }
 
 /**
@@ -191,8 +241,14 @@ export function childEnv(toolchain, extra = {}) {
  *
  * pnpm is no longer the only tool this has to find. dsh can delegate to the
  * Claude Code and Codex CLIs, which it expects on PATH and does not probe for,
- * so a version manager's bin directory is now the difference between that
- * feature working and failing with nothing to look at.
+ * so a missing directory is now a feature that fails with nothing to look at.
+ *
+ * {@link loginShellDirs} answers that better than any list of likely places
+ * can, and this is what remains when it cannot be asked: the shell may be an
+ * exotic one, or Windows, or a machine where startup files hang. Nothing here
+ * is a version number or an install path we invented — each entry is a
+ * documented location a tool puts itself in, read from the tool's own
+ * environment variable when it has one.
  *
  * @returns {string[]} the candidate directories that exist
  */
@@ -215,10 +271,15 @@ function globalBinDirs() {
       path.join(home, 'Library', 'pnpm'),
       path.join(home, '.volta', 'bin'),
       // asdf and fnm both keep one stable directory that always points at the
-      // active version, so neither needs the enumeration nvm does below.
-      path.join(home, '.asdf', 'shims'),
-      path.join(process.env.FNM_DIR ?? path.join(home, 'Library', 'Application Support', 'fnm'),
-        'aliases', 'default', 'bin'),
+      // active version, so neither needs the enumeration nvm does below. Each
+      // says where it lives; the defaults are only for when it has not been
+      // asked to live somewhere else.
+      path.join(process.env.ASDF_DATA_DIR || path.join(home, '.asdf'), 'shims'),
+      ...[
+        process.env.FNM_DIR,
+        path.join(home, 'Library', 'Application Support', 'fnm'),
+        path.join(home, '.local', 'share', 'fnm'),
+      ].filter(Boolean).map(dir => path.join(dir, 'aliases', 'default', 'bin')),
       ...nvmBinDirs(),
       '/opt/homebrew/bin',
       '/usr/local/bin',
