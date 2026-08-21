@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('dshSkills', {
   update: entry => ipcRenderer.invoke('skills:update', entry),
   /** The market catalog, filtered to skills; `force` skips the disk cache. */
   catalog: force => ipcRenderer.invoke('skills:catalog', force),
+  /** The repositories this shell suggests: [{ repo, label }]. */
+  recommended: () => ipcRenderer.invoke('skills:recommended'),
+  /** What one repository holds, without downloading it: [{ subpath, files }]. */
+  listRepo: repo => ipcRenderer.invoke('skills:list-repo', repo),
   /** Opens a catalog link in the user's browser. */
   openLink: url => ipcRenderer.invoke('skills:open-link', url),
   /** Switches an installed skill off or back on, without removing it. */
