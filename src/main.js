@@ -35,7 +35,8 @@ import { normalizeSpec } from './plugin-spec.js'
 import {
   installFromDirectory, installFromGitHub, installFromZip, removeSkill, SKILLS_DIR, updateSkill,
 } from './skill-install.js'
-import { findSkillUpdates, readOrigins } from './skill-source.js'
+import { findSkillUpdates, listRepoSkills, readOrigins } from './skill-source.js'
+import { RECOMMENDED_SOURCES } from './skill-sources.js'
 import { listSkills, setEnabled as setSkillEnabled } from './skills.js'
 import { findPluginUpdates } from './plugin-updates.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
@@ -1622,6 +1623,15 @@ function registerSkillIpc() {
       fetchImpl: net.fetch, log: skillsLog,
     })
     return { ...catalog, entries: catalog.entries.filter(entry => entry.kind === 'skill') }
+  })
+  // A constant, not a fetch: what is in each repository comes from the
+  // repository when the user opens it, so nothing here can go stale.
+  ipcMain.handle('skills:recommended', () => RECOMMENDED_SOURCES)
+  // One request, no downloads: enough to show what a repository holds so
+  // the user can take one skill instead of twenty.
+  ipcMain.handle('skills:list-repo', async (_event, repo) => {
+    const { skills } = await listRepoSkills({ repo: String(repo), fetchImpl: net.fetch })
+    return skills.map(skill => ({ subpath: skill.subpath, files: skill.files.length }))
   })
   ipcMain.handle('skills:open-link', (_event, url) => openMarketLink(url))
 

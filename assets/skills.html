@@ -158,9 +158,25 @@
   .badge.new { background: var(--accent-soft); color: var(--accent); }
   .note { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 
+  /* Suggested sources sit above the catalog because they are the answer to
+     the question the catalog only partly answers. */
+  .rec { display: flex; flex-direction: column; gap: 7px; }
+  .rec > h2 {
+    margin: 0; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .inner { grid-area: 4 / 1 / auto / 5; display: flex; flex-direction: column; gap: 5px; margin-top: 7px; padding-left: 12px; border-left: 2px solid var(--border); }
+  .inner .one { display: flex; align-items: center; gap: 9px; }
+  .inner .one .path {
+    flex: 1; font-size: 12px; color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
   /* Market rows: the same shape as an installed skill so the eye does not
      have to learn a second layout for the same thing. */
-  #market-list { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; flex: 1; min-height: 0; }
+  #market-scroll { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; flex: 1; min-height: 0; }
+  #market-list { display: flex; flex-direction: column; gap: 7px; }
   .entry {
     display: grid; align-items: center; gap: 3px 9px;
     grid-template-columns: max-content max-content 1fr max-content;
@@ -229,8 +245,11 @@
       <input id="market-search" data-i18n-placeholder="skills.marketSearch" spellcheck="false">
       <button id="market-refresh" data-i18n="skills.marketRefresh"></button>
     </div>
-    <div class="hint" id="market-meta"></div>
-    <div id="market-list"></div>
+    <div id="market-scroll">
+      <div class="rec" id="recommended"></div>
+      <div class="hint" id="market-meta"></div>
+      <div id="market-list"></div>
+    </div>
     <div class="note" data-i18n="skills.marketNote"></div>
   </section>
   <pre id="log"></pre>
@@ -472,6 +491,81 @@
       return node
     }
 
+    /**
+     * The suggested repositories, each expandable.
+     *
+     * Expanding lists what the repository holds without downloading any of
+     * it, because installing all twenty of a collection is rarely what
+     * somebody wants and finding that out afterwards is expensive.
+     */
+    async function renderRecommended() {
+      const sources = await dshSkills.recommended()
+      const box = $('recommended')
+      box.textContent = ''
+      const title = document.createElement('h2')
+      title.textContent = t('skills.recommendedTitle')
+      box.append(title)
+      const note = document.createElement('div')
+      note.className = 'note'
+      note.textContent = t('skills.recommendedNote')
+      box.append(note)
+
+      for (const source of sources) {
+        const node = document.createElement('div')
+        node.className = 'entry'
+
+        // The whole `owner/name`, because half of it is not an identity: a
+        // repository called "skills" tells the reader nothing about whose.
+        const name = document.createElement('div')
+        name.className = 'name'
+        name.textContent = source.repo
+        node.append(name)
+
+        const desc = document.createElement('div')
+        desc.className = 'desc'
+        desc.textContent = t(source.label)
+        node.append(desc)
+
+        const inner = document.createElement('div')
+        inner.className = 'inner'
+        inner.hidden = true
+
+        const actions = document.createElement('div')
+        actions.className = 'actions'
+        const browse = button(t('skills.browse'), 'small', () => act(async () => {
+          if (!inner.hidden) { inner.hidden = true; return }
+          inner.textContent = ''
+          const held = await dshSkills.listRepo(source.repo)
+          if (held.length === 0) {
+            const empty = document.createElement('div')
+            empty.className = 'hint'
+            empty.textContent = t('skills.browseEmpty')
+            inner.append(empty)
+          }
+          for (const skill of held) {
+            const row = document.createElement('div')
+            row.className = 'one'
+            const where = document.createElement('span')
+            where.className = 'path'
+            where.textContent = skill.subpath || source.repo.split('/')[1]
+            row.append(where)
+            row.append(button(t('skills.marketInstall'), 'small', () => act(() => installSource(
+              `https://github.com/${source.repo}/tree/HEAD/${skill.subpath}`,
+            ))))
+            inner.append(row)
+          }
+          browse.textContent = t('skills.browseCount', { count: held.length })
+          inner.hidden = false
+        }))
+        actions.append(browse)
+        actions.append(button(t('skills.installAll'), 'small primary', () => act(() => installSource(source.repo))))
+        actions.append(button(t('skills.marketRepo'), 'small', () => dshSkills.openLink('https://github.com/' + source.repo)))
+        node.append(actions)
+        node.append(inner)
+        box.append(node)
+      }
+    }
+
     async function loadMarket(force) {
       const result = await dshSkills.catalog(force === true)
       catalog = result.entries ?? []
@@ -510,7 +604,10 @@
       // Loaded on first sight rather than at startup: the window's job is the
       // installed list, and the catalog is a few hundred KB of nobody's
       // business until the user asks for it.
-      if (market && catalog.length === 0) act(() => loadMarket(false))
+      if (market && catalog.length === 0) act(async () => {
+        await renderRecommended()
+        await loadMarket(false)
+      })
     }
     $('tab-installed').addEventListener('click', () => showTab(false))
     $('tab-market').addEventListener('click', () => showTab(true))
