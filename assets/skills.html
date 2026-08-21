@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+  /* The same tokens as the plugin window: these are two windows of one
+     application and must not read as two applications. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f8;
+    --surface: #ffffff;
+    --surface-2: #f0f0f3;
+    --sunken: #fafafb;
+    --border: #e0e0e6;
+    --border-strong: #cfcfd8;
+    --text: #1c1c22;
+    --text-muted: #6b6b78;
+    --text-faint: #90909c;
+    --accent: #3b62d9;
+    --accent-text: #ffffff;
+    --accent-soft: #eaf0ff;
+    --ok-bg: #e6f6ec; --ok-text: #1c7a45;
+    --idle-bg: #f3eee4; --idle-text: #8a6a2f;
+    --warn-bg: #fdf6e3; --warn-border: #ecdcb0; --warn-text: #7a5c17;
+    --danger: #c0392b;
+    --radius: 9px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131317;
+      --surface: #1b1b21;
+      --surface-2: #24242b;
+      --sunken: #101014;
+      --border: #2a2a33;
+      --border-strong: #3a3a45;
+      --text: #e9e9ef;
+      --text-muted: #9a9aa6;
+      --text-faint: #6f6f7b;
+      --accent: #5b7cf0;
+      --accent-text: #ffffff;
+      --accent-soft: #222a44;
+      --ok-bg: #16301f; --ok-text: #74cf95;
+      --idle-bg: #2e2519; --idle-text: #d3a76c;
+      --warn-bg: #2b2418; --warn-border: #4d3d1e; --warn-text: #e6c987;
+      --danger: #e06a5c;
+    }
+  }
+
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; gap: 14px;
+    box-sizing: border-box; padding: 18px 20px;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--accent); color: var(--accent-text); }
+
+  header { display: flex; align-items: baseline; gap: 9px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+  .hint { color: var(--text-muted); font-size: 12px; }
+
+  .row { display: flex; gap: 8px; }
+  input, button { font: inherit; }
+  button {
+    appearance: none; cursor: pointer; white-space: nowrap;
+    padding: 9px 15px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+    transition: background .12s, border-color .12s, color .12s, transform .06s;
+  }
+  button:hover:not(:disabled) { background: var(--surface-2); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-soft); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 550; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+  button.small { padding: 6px 11px; font-size: 12px; }
+  button.danger:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); background: var(--surface); }
+  .spacer { flex: 1; }
+
+  #list { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; flex: 1; min-height: 0; }
+
+  /* One block per root. The grouping is the honest way to show a layered
+     lookup: which of two same-named skills wins is dsh's to decide, so the
+     window shows where each came from rather than pretending to rank them. */
+  .group { display: flex; flex-direction: column; gap: 7px; }
+  .group > h2 {
+    margin: 0; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .group > h2 .path {
+    text-transform: none; letter-spacing: 0; font-weight: 400;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .skill {
+    display: grid; align-items: center; gap: 3px 9px;
+    grid-template-columns: max-content 1fr max-content;
+    padding: 10px 12px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    transition: border-color .12s;
+  }
+  .skill:hover { border-color: var(--border-strong); }
+  .skill.ignored { border-color: var(--warn-border); background: var(--warn-bg); }
+  .skill .name { grid-area: 1 / 1; font-weight: 600; }
+  .skill .name.unnamed { color: var(--text-faint); font-weight: 400; }
+  .skill .badges { grid-area: 1 / 2; display: flex; gap: 5px; flex-wrap: wrap; }
+  .skill .actions { grid-area: 1 / 3 / span 3; display: flex; gap: 8px; align-self: center; }
+  .skill .desc {
+    grid-area: 2 / 1 / auto / 3; font-size: 12px; color: var(--text-muted);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .skill .meta {
+    grid-area: 3 / 1 / auto / 3; font-size: 11px; color: var(--text-faint);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* The reasons. dsh reports none of this anywhere the user can reach, so
+     this list is the only account of why a skill is not working — it gets
+     room rather than a tooltip. */
+  .skill .why { grid-area: 4 / 1 / auto / 3; display: flex; flex-direction: column; gap: 3px; margin-top: 5px; }
+  .why .reason { font-size: 12px; color: var(--warn-text); }
+  .why .reason.soft { color: var(--text-muted); }
+  .why .reason code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; padding: 1px 5px; border-radius: 5px;
+    background: var(--surface-2); color: var(--text);
+  }
+
+  .badge {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    background: var(--ok-bg); color: var(--ok-text); white-space: nowrap;
+  }
+  .badge.off { background: var(--idle-bg); color: var(--idle-text); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-border); }
+  .badge.read { background: var(--surface-2); color: var(--text-muted); }
+  .empty { color: var(--text-faint); padding: 28px; text-align: center; }
+
+  #log {
+    margin: 0; padding: 10px 12px; height: 96px; overflow-y: auto; white-space: pre-wrap;
+    background: var(--sunken); border: 1px solid var(--border); border-radius: var(--radius);
+    color: var(--text-muted); font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong); border-radius: 999px;
+    border: 3px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: content-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+  <header>
+    <h1 id="heading"></h1>
+    <span class="hint" data-i18n="skills.hint"></span>
+  </header>
+
+  <div class="row">
+    <button class="primary" id="install-folder" data-i18n="skills.installFolder"></button>
+    <button id="install-zip" data-i18n="skills.installZip"></button>
+    <span class="spacer"></span>
+    <button id="open-root" data-i18n="skills.openRoot"></button>
+  </div>
+
+  <div id="list"><div class="empty" data-i18n="skills.loading"></div></div>
+  <pre id="log"></pre>
+
+  <script>
+    const $ = id => document.getElementById(id)
+
+    const { locale, messages } = dshSkills.i18n
+    const t = (key, params) => {
+      const template = messages[key] ?? key
+      return params
+        ? template.replace(/\{(\w+)\}/g, (whole, name) => (
+          Object.hasOwn(params, name) ? String(params[name]) : whole))
+        : template
+    }
+    document.documentElement.lang = locale
+    document.title = t('skills.title')
+    $('heading').textContent = t('skills.heading')
+    for (const node of document.querySelectorAll('[data-i18n]')) {
+      node.textContent = t(node.dataset.i18n)
+    }
+
+    function appendLog(line) {
+      $('log').textContent += line + '\n'
+      $('log').scrollTop = $('log').scrollHeight
+    }
+    dshSkills.onLog(appendLog)
+
+    // Renderer failures must never be silent — the same rule the plugin
+    // window follows, and doubly so in a window whose whole job is to say
+    // what went wrong.
+    window.addEventListener('error', event => appendLog(`✘ ${t('skills.pageError', { message: event.message })}`))
+    window.addEventListener('unhandledrejection', event => {
+      appendLog(`✘ ${t('skills.actionFailed', { message: event.reason?.message ?? event.reason })}`)
+    })
+
+    function setBusy(value) {
+      for (const b of document.querySelectorAll('button')) b.disabled = value
+    }
+
+    /**
+     * A refusal from the main process arrives as a code — the same vocabulary
+     * the diagnostics use — wrapped in Electron's IPC error text. The code is
+     * recovered so the user reads a sentence rather than a stack.
+     */
+    function reason(error) {
+      const raw = String(error?.message ?? error)
+      const code = raw.replace(/^Error invoking remote method '[^']*': Error: /, '').split(':')[0].trim()
+      const message = messages[`skills.problem.${code}`]
+      return message ?? raw
+    }
+
+    /** One diagnostic line: the sentence, and the offending value after it. */
+    function reasonNode(problem) {
+      const line = document.createElement('div')
+      line.className = problem.fatal ? 'reason' : 'reason soft'
+      line.textContent = (problem.fatal ? '✘ ' : '· ') + t(`skills.problem.${problem.code}`)
+      if (problem.detail) {
+        line.append(' ')
+        const detail = document.createElement('code')
+        detail.textContent = problem.detail
+        line.append(detail)
+      }
+      return line
+    }
+
+    function skillNode(skill) {
+      const ignored = skill.problems.some(p => p.fatal)
+      const node = document.createElement('div')
+      node.className = ignored ? 'skill ignored' : 'skill'
+
+      const name = document.createElement('div')
+      name.className = skill.name ? 'name' : 'name unnamed'
+      name.textContent = skill.name ?? t('skills.noName')
+      node.append(name)
+
+      const badges = document.createElement('div')
+      badges.className = 'badges'
+      if (ignored) badges.append(badge(t('skills.badgeIgnored'), 'warn'))
+      if (!skill.enabled) badges.append(badge(t('skills.badgeOff'), 'off'))
+      if (!skill.writable) badges.append(badge(t('skills.badgeReadonly'), 'read'))
+      node.append(badges)
+
+      if (skill.description) {
+        const desc = document.createElement('div')
+        desc.className = 'desc'
+        desc.textContent = skill.description
+        node.append(desc)
+      }
+
+      const meta = document.createElement('div')
+      meta.className = 'meta'
+      meta.textContent = skill.entry
+      node.append(meta)
+
+      if (skill.problems.length > 0) {
+        const why = document.createElement('div')
+        why.className = 'why'
+        for (const problem of skill.problems) why.append(reasonNode(problem))
+        node.append(why)
+      }
+
+      const actions = document.createElement('div')
+      actions.className = 'actions'
+      actions.append(button(t('skills.reveal'), 'small', () => dshSkills.reveal(skill.entry)))
+      // Only the shell's own root is writable: the shared ~/.agents folder is
+      // other tools' too, and the bundled one belongs to the runtime.
+      if (skill.writable) {
+        actions.append(button(
+          t(skill.enabled ? 'skills.disable' : 'skills.enable'), 'small',
+          () => act(() => dshSkills.setEnabled(skill.entry, !skill.enabled)),
+        ))
+        actions.append(button(t('skills.remove'), 'small danger', () => {
+          if (!confirm(t('skills.confirmRemove', { name: skill.name ?? skill.entry }))) return
+          act(async () => {
+            await dshSkills.remove(skill.entry)
+            appendLog(t('skills.removed', { name: skill.name ?? skill.entry }))
+          })
+        }))
+      }
+      node.append(actions)
+      return node
+    }
+
+    function badge(text, kind) {
+      const node = document.createElement('span')
+      node.className = `badge ${kind}`
+      node.textContent = text
+      return node
+    }
+
+    function button(text, className, onClick) {
+      const node = document.createElement('button')
+      node.className = className
+      node.textContent = text
+      node.addEventListener('click', onClick)
+      return node
+    }
+
+    async function refresh() {
+      const skills = await dshSkills.list()
+      const list = $('list')
+      list.textContent = ''
+      if (skills.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'empty'
+        empty.textContent = t('skills.empty')
+        list.append(empty)
+        return
+      }
+      // Grouped in the order the shell reported them, which is the order dsh
+      // consults the roots — the window does not re-sort that.
+      const groups = new Map()
+      for (const skill of skills) {
+        if (!groups.has(skill.source)) groups.set(skill.source, [])
+        groups.get(skill.source).push(skill)
+      }
+      for (const [source, members] of groups) {
+        const group = document.createElement('div')
+        group.className = 'group'
+        const title = document.createElement('h2')
+        title.textContent = t(`skills.source.${source}`)
+        const where = document.createElement('span')
+        where.className = 'path'
+        where.textContent = '  ' + members[0].root
+        title.append(where)
+        group.append(title)
+        for (const skill of members) group.append(skillNode(skill))
+        list.append(group)
+      }
+    }
+
+    /** Runs an operation, reports a refusal as a sentence, and refreshes. */
+    async function act(operation) {
+      setBusy(true)
+      try {
+        await operation()
+      } catch (error) {
+        appendLog(`✘ ${t('skills.actionFailed', { message: reason(error) })}`)
+      } finally {
+        setBusy(false)
+        await refresh()
+      }
+    }
+
+    $('install-folder').addEventListener('click', () => act(async () => {
+      const source = await dshSkills.pickDirectory()
+      if (!source) return
+      const { name } = await dshSkills.installDirectory(source)
+      appendLog(t('skills.installed', { name }))
+    }))
+
+    $('install-zip').addEventListener('click', () => act(async () => {
+      const zipPath = await dshSkills.pickZip()
+      if (!zipPath) return
+      const { name } = await dshSkills.installZip(zipPath)
+      appendLog(t('skills.installed', { name }))
+    }))
+
+    $('open-root').addEventListener('click', () => dshSkills.reveal(null))
+
+    refresh()
+  </script>
+</body>
+</html>

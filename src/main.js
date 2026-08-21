@@ -17,7 +17,7 @@ import {
 } from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { readFile, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +32,8 @@ import {
   getDisabledPlugins, getPluginConfigValues, probePluginConfig, setPluginConfig, setPluginDisabled,
 } from './plugin-config.js'
 import { normalizeSpec } from './plugin-spec.js'
+import { installFromDirectory, installFromZip, removeSkill, SKILLS_DIR } from './skill-install.js'
+import { listSkills, setEnabled as setSkillEnabled } from './skills.js'
 import { findPluginUpdates } from './plugin-updates.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
 import { withAccessHint } from './permission.js'
@@ -170,6 +172,7 @@ function applyLocale(id) {
   }
   for (const win of pluginWindows()) win.reload()
   if (state.settingsWindow && !state.settingsWindow.isDestroyed()) state.settingsWindow.reload()
+  if (state.skillsWindow && !state.skillsWindow.isDestroyed()) state.skillsWindow.reload()
   if (state.window && !state.window.isDestroyed() && !state.port) {
     // Still on the loading page: reload it so its two strings switch too.
     state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
@@ -1490,6 +1493,136 @@ function refreshTrayMenu() {
   if (state.tray && !state.tray.isDestroyed()) state.tray.setContextMenu(trayMenu())
 }
 
+// ── Skills ──────────────────────────────────────────────────────────────────
+// A skill is a directory with a SKILL.md in it, discovered by dsh from a list
+// of roots and picked up live. There is no CLI behind any of this — `dsh` has
+// `web` and `plugin` and nothing else — so unlike the plugin manager, which
+// drives `dsh plugin`, this window is the only way to do any of it, and the
+// only place a malformed skill is ever reported: dsh's own answer to one is a
+// log line at a level it does not print.
+
+function skillsDir() {
+  return path.join(paths.dshHome, SKILLS_DIR)
+}
+
+/**
+ * The roots to show, in the order dsh consults them.
+ *
+ * The bundled root comes from the environment because that is the only place
+ * the shell could learn it: which preset is active, and where its skills
+ * live, is dsh's business. Unset, it is simply not shown — better than a
+ * guess at a path that would quietly list the wrong preset's skills.
+ */
+function skillRoots() {
+  return {
+    dshHome: paths.dshHome,
+    agentsHome: process.env.DSH_AGENTS_HOME ?? path.join(homedir(), '.agents'),
+    bundledDir: process.env.DSH_BUNDLED_SKILL_DIR,
+  }
+}
+
+function skillsLog(line) {
+  log(`[skills] ${line}`)
+  const win = state.skillsWindow
+  if (win && !win.isDestroyed()) win.webContents.send('skills:log', line)
+}
+
+/**
+ * Resolves an entry name from the window to a skill in the writable root.
+ *
+ * The name arrives over IPC and is never trusted as a path: it has to match
+ * something the shell just listed in its own root, which is a stricter test
+ * than checking for `..` and needs no separate one.
+ */
+async function writableSkill(entry) {
+  const skills = await listSkills(skillRoots())
+  const skill = skills.find(candidate => candidate.entry === String(entry) && candidate.writable)
+  if (skill === undefined) throw new Error('outside-root')
+  return skill
+}
+
+function openSkillsWindow() {
+  const open = state.skillsWindow
+  if (open && !open.isDestroyed()) {
+    open.show()
+    open.focus()
+    return
+  }
+  const win = new BrowserWindow({
+    width: 780,
+    height: 640,
+    title: t('window.skills'),
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(here, 'skills-preload.cjs') },
+  })
+  if (process.platform !== 'darwin') win.removeMenu()
+  win.loadFile(path.join(assets, 'skills.html'))
+  win.on('closed', () => { state.skillsWindow = null })
+  state.skillsWindow = win
+}
+
+function registerSkillIpc() {
+  ipcMain.handle('skills:list', () => listSkills(skillRoots()))
+
+  ipcMain.handle('skills:pick-directory', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(state.skillsWindow, {
+      title: t('skills.installFolder'),
+      // A lone markdown file is a skill too, so the picker takes either
+      // rather than making the user know which shape they have.
+      properties: ['openDirectory', 'openFile'],
+      filters: [{ name: 'Markdown', extensions: ['md'] }],
+    })
+    return canceled ? null : (filePaths?.[0] ?? null)
+  })
+
+  ipcMain.handle('skills:pick-zip', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(state.skillsWindow, {
+      title: t('skills.installZip'),
+      filters: [{ name: 'Zip', extensions: ['zip'] }],
+      properties: ['openFile'],
+    })
+    return canceled ? null : (filePaths?.[0] ?? null)
+  })
+
+  ipcMain.handle('skills:install-directory', (_event, source) => installFromDirectory({
+    source: String(source), skillsDir: skillsDir(), log: skillsLog,
+  }))
+  ipcMain.handle('skills:install-zip', (_event, zipPath) => installFromZip({
+    zipPath: String(zipPath), skillsDir: skillsDir(), log: skillsLog,
+  }))
+
+  ipcMain.handle('skills:set-enabled', async (_event, entry, enabled) => {
+    const skill = await writableSkill(entry)
+    await setSkillEnabled(skill, enabled === true)
+    skillsLog(`${skill.name ?? skill.entry} ${enabled === true ? 'on' : 'off'}`)
+  })
+
+  ipcMain.handle('skills:remove', async (_event, entry) => {
+    const skill = await writableSkill(entry)
+    await removeSkill({ skillsDir: skillsDir(), entry: skill.entry })
+    skillsLog(`${skill.name ?? skill.entry} removed`)
+  })
+
+  ipcMain.handle('skills:reveal', async (_event, entry) => {
+    if (entry === null || entry === undefined) {
+      // Created on the way: the root does not exist until the first install,
+      // and a button that opens nothing is worse than one that opens an empty
+      // folder the user can drop a skill into.
+      await mkdir(skillsDir(), { recursive: true })
+      return shell.openPath(skillsDir())
+    }
+    const skills = await listSkills(skillRoots())
+    const skill = skills.find(candidate => candidate.entry === String(entry))
+    if (skill === undefined) return undefined
+    return shell.showItemInFolder(skill.file)
+  })
+}
+
+/** Shared between the application menu and the tray context menu. */
+function skillItems() {
+  return [{ label: t('menu.skillManage'), click: openSkillsWindow }]
+}
+
 /** Shared between the application menu and the tray context menu. */
 function languageItems() {
   return LOCALES.map(({ id, label }) => ({
@@ -1625,6 +1758,7 @@ function buildMenu() {
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: t('menu.main'), submenu: actionItems() },
     { label: t('menu.plugins'), submenu: pluginItems() },
+    { label: t('menu.skills'), submenu: skillItems() },
     { label: t('menu.edit'), submenu: editItems() },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -1635,6 +1769,7 @@ function trayMenu() {
     { label: t('menu.showWindow'), click: showWindow },
     { type: 'separator' },
     { label: t('menu.plugins'), submenu: pluginItems() },
+    { label: t('menu.skills'), submenu: skillItems() },
     ...actionItems(),
     { type: 'separator' },
     { label: t('menu.quit'), click: () => app.quit() },
@@ -1727,6 +1862,7 @@ async function main() {
   log(`data directory: ${locations.dataDir}`)
   if (locations.logDir !== locations.dataDir) log(`log directory: ${locations.logDir}`)
   registerPluginIpc()
+  registerSkillIpc()
   registerSettingsIpc()
   registerFileHandoff()
   // Before the first child is spawned and before anything is fetched: the
