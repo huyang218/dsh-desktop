@@ -138,6 +138,49 @@
   .badge.read { background: var(--surface-2); color: var(--text-muted); }
   .empty { color: var(--text-faint); padding: 28px; text-align: center; }
 
+  /* Two views of one subject, so tabs rather than a second window: the
+     market is where a skill is found and the list is where it lands, and
+     watching it land is the point. */
+  .tabs { display: flex; gap: 6px; }
+  .tab { padding: 7px 13px; font-size: 12px; border-radius: 999px; }
+  .tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 550; }
+  .panel { display: flex; flex-direction: column; gap: 12px; flex: 1; min-height: 0; }
+  .panel[hidden] { display: none; }
+
+  input {
+    flex: 1; padding: 9px 11px; border-radius: var(--radius);
+    border: 1px solid var(--border-strong); background: var(--surface);
+    color: var(--text); outline: none; transition: border-color .12s, box-shadow .12s;
+  }
+  input::placeholder { color: var(--text-faint); }
+  input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  .badge.new { background: var(--accent-soft); color: var(--accent); }
+  .note { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+  /* Market rows: the same shape as an installed skill so the eye does not
+     have to learn a second layout for the same thing. */
+  #market-list { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; flex: 1; min-height: 0; }
+  .entry {
+    display: grid; align-items: center; gap: 3px 9px;
+    grid-template-columns: max-content max-content 1fr max-content;
+    padding: 10px 12px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .entry:hover { border-color: var(--border-strong); }
+  .entry .name { grid-area: 1 / 1; font-weight: 600; }
+  .entry .stars { grid-area: 1 / 2; font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+  .entry .actions { grid-area: 1 / 4 / span 3; display: flex; gap: 8px; align-self: center; }
+  .entry .desc {
+    grid-area: 2 / 1 / auto / 4; font-size: 12px; color: var(--text-muted);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .entry .meta {
+    grid-area: 3 / 1 / auto / 4; font-size: 11px; color: var(--text-faint);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
   #log {
     margin: 0; padding: 10px 12px; height: 96px; overflow-y: auto; white-space: pre-wrap;
     background: var(--sunken); border: 1px solid var(--border); border-radius: var(--radius);
@@ -161,14 +204,35 @@
     <span class="hint" data-i18n="skills.hint"></span>
   </header>
 
-  <div class="row">
-    <button class="primary" id="install-folder" data-i18n="skills.installFolder"></button>
-    <button id="install-zip" data-i18n="skills.installZip"></button>
-    <span class="spacer"></span>
-    <button id="open-root" data-i18n="skills.openRoot"></button>
+  <div class="tabs">
+    <button class="tab active" id="tab-installed" data-i18n="skills.tabInstalled"></button>
+    <button class="tab" id="tab-market" data-i18n="skills.tabMarket"></button>
   </div>
 
-  <div id="list"><div class="empty" data-i18n="skills.loading"></div></div>
+  <section class="panel" id="panel-installed">
+    <div class="row">
+      <input id="source" data-i18n-placeholder="skills.sourcePlaceholder" spellcheck="false">
+      <button class="primary" id="install-github" data-i18n="skills.installGitHub"></button>
+    </div>
+    <div class="row">
+      <button id="install-folder" data-i18n="skills.installFolder"></button>
+      <button id="install-zip" data-i18n="skills.installZip"></button>
+      <button id="check-updates" data-i18n="skills.checkUpdates"></button>
+      <span class="spacer"></span>
+      <button id="open-root" data-i18n="skills.openRoot"></button>
+    </div>
+    <div id="list"><div class="empty" data-i18n="skills.loading"></div></div>
+  </section>
+
+  <section class="panel" id="panel-market" hidden>
+    <div class="row">
+      <input id="market-search" data-i18n-placeholder="skills.marketSearch" spellcheck="false">
+      <button id="market-refresh" data-i18n="skills.marketRefresh"></button>
+    </div>
+    <div class="hint" id="market-meta"></div>
+    <div id="market-list"></div>
+    <div class="note" data-i18n="skills.marketNote"></div>
+  </section>
   <pre id="log"></pre>
 
   <script>
@@ -188,6 +252,9 @@
     for (const node of document.querySelectorAll('[data-i18n]')) {
       node.textContent = t(node.dataset.i18n)
     }
+    for (const node of document.querySelectorAll('[data-i18n-placeholder]')) {
+      node.placeholder = t(node.dataset.i18nPlaceholder)
+    }
 
     function appendLog(line) {
       $('log').textContent += line + '\n'
@@ -204,8 +271,15 @@
     })
 
     function setBusy(value) {
-      for (const b of document.querySelectorAll('button')) b.disabled = value
+      // Tabs stay live: switching view touches nothing on disk, and freezing
+      // them makes a long download feel like a hung window.
+      for (const b of document.querySelectorAll('button:not(.tab)')) b.disabled = value
     }
+
+    /** Entry name → the newer commit, from the last update check. */
+    let updates = {}
+    /** The market's skill entries, as of the last load. */
+    let catalog = []
 
     /**
      * A refusal from the main process arrives as a code — the same vocabulary
@@ -248,6 +322,7 @@
       if (ignored) badges.append(badge(t('skills.badgeIgnored'), 'warn'))
       if (!skill.enabled) badges.append(badge(t('skills.badgeOff'), 'off'))
       if (!skill.writable) badges.append(badge(t('skills.badgeReadonly'), 'read'))
+      if (updates[skill.entry]) badges.append(badge(t('skills.badgeUpdate'), 'new'))
       node.append(badges)
 
       if (skill.description) {
@@ -274,6 +349,15 @@
       actions.append(button(t('skills.reveal'), 'small', () => dshSkills.reveal(skill.entry)))
       // Only the shell's own root is writable: the shared ~/.agents folder is
       // other tools' too, and the bundled one belongs to the runtime.
+      if (skill.writable && updates[skill.entry]) {
+        actions.append(button(t('skills.update'), 'small primary', () => act(async () => {
+          const result = await dshSkills.update(skill.entry)
+          appendLog(result.changed
+            ? t('skills.updated', { name: result.name, sha: result.sha.slice(0, 7) })
+            : t('skills.noUpdate', { name: result.name }))
+          delete updates[skill.entry]
+        })))
+      }
       if (skill.writable) {
         actions.append(button(
           t(skill.enabled ? 'skills.disable' : 'skills.enable'), 'small',
@@ -351,6 +435,114 @@
         await refresh()
       }
     }
+
+    function marketNode(entry) {
+      const node = document.createElement('div')
+      node.className = 'entry'
+
+      const name = document.createElement('div')
+      name.className = 'name'
+      name.textContent = entry.name
+      node.append(name)
+
+      const stars = document.createElement('div')
+      stars.className = 'stars'
+      stars.textContent = '★ ' + entry.stars.toLocaleString()
+      node.append(stars)
+
+      const text = entry.description?.[locale.startsWith('zh') ? 'zh' : 'en']
+        ?? entry.description?.en ?? entry.description?.zh
+      if (text) {
+        const desc = document.createElement('div')
+        desc.className = 'desc'
+        desc.textContent = text
+        node.append(desc)
+      }
+
+      const meta = document.createElement('div')
+      meta.className = 'meta'
+      meta.textContent = entry.url.replace('https://github.com/', '')
+      node.append(meta)
+
+      const actions = document.createElement('div')
+      actions.className = 'actions'
+      actions.append(button(t('skills.marketRepo'), 'small', () => dshSkills.openLink(entry.url)))
+      // Every catalog entry is a repository, so install is the same operation
+      // the URL box performs — the catalog only saved the user finding it.
+      actions.append(button(t('skills.marketInstall'), 'small primary', () => act(() => installSource(entry.url))))
+      node.append(actions)
+      return node
+    }
+
+    async function loadMarket(force) {
+      const result = await dshSkills.catalog(force === true)
+      catalog = result.entries ?? []
+      renderMarket()
+      const when = new Date(result.fetchedAt).toLocaleString(locale)
+      $('market-meta').textContent = t('skills.marketMeta', { count: catalog.length, time: when })
+        + (result.cached ? ' ' + t('skills.marketCached') : '')
+    }
+
+    function renderMarket() {
+      const query = $('market-search').value.trim().toLowerCase()
+      const list = $('market-list')
+      list.textContent = ''
+      const shown = query === ''
+        ? catalog
+        : catalog.filter(entry => (entry.name + ' ' + entry.owner + ' '
+          + (entry.description?.en ?? '') + ' ' + (entry.description?.zh ?? '')).toLowerCase().includes(query))
+      if (shown.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'empty'
+        empty.textContent = t('skills.marketEmpty')
+        list.append(empty)
+        return
+      }
+      for (const entry of shown) list.append(marketNode(entry))
+    }
+
+    $('market-search').addEventListener('input', renderMarket)
+    $('market-refresh').addEventListener('click', () => act(() => loadMarket(true)))
+
+    function showTab(market) {
+      $('tab-installed').classList.toggle('active', !market)
+      $('tab-market').classList.toggle('active', market)
+      $('panel-installed').hidden = market
+      $('panel-market').hidden = !market
+      // Loaded on first sight rather than at startup: the window's job is the
+      // installed list, and the catalog is a few hundred KB of nobody's
+      // business until the user asks for it.
+      if (market && catalog.length === 0) act(() => loadMarket(false))
+    }
+    $('tab-installed').addEventListener('click', () => showTab(false))
+    $('tab-market').addEventListener('click', () => showTab(true))
+
+    /** Installs a repository reference and reports what landed and what did not. */
+    async function installSource(input) {
+      const result = await dshSkills.installGitHub(input)
+      let line = t('skills.installedCount', { count: result.installed.length })
+      if (result.skipped.length > 0) line += t('skills.skippedCount', { count: result.skipped.length })
+      appendLog(line)
+      for (const skipped of result.skipped) {
+        appendLog(`  ${skipped.where}: ${messages[`skills.problem.${skipped.code}`] ?? skipped.code}`)
+      }
+    }
+
+    $('install-github').addEventListener('click', () => act(async () => {
+      const input = $('source').value.trim()
+      if (input === '') return
+      await installSource(input)
+      $('source').value = ''
+    }))
+    $('source').addEventListener('keydown', event => {
+      if (event.key === 'Enter') $('install-github').click()
+    })
+
+    $('check-updates').addEventListener('click', () => act(async () => {
+      updates = await dshSkills.checkUpdates()
+      const count = Object.keys(updates).length
+      appendLog(count === 0 ? t('skills.upToDate') : t('skills.updateCount', { count }))
+    }))
 
     $('install-folder').addEventListener('click', () => act(async () => {
       const source = await dshSkills.pickDirectory()

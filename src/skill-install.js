@@ -22,7 +22,8 @@
  */
 import { cp, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { inspect, SKILL_FILE } from './skills.js'
+import { inspect, DISABLED_SUFFIX, SKILL_FILE } from './skills.js'
+import { downloadRepo, findSkills, parseSource, readOrigins, resolveCommit, writeOrigins } from './skill-source.js'
 import { extractZip } from './zip.js'
 
 /** Directory under DSH_HOME that holds the user's own skills. */
@@ -100,6 +101,116 @@ export async function installFromZip({ zipPath, skillsDir, log }) {
 }
 
 /**
+ * Installs every skill a GitHub repository holds, or the one a link points
+ * into.
+ *
+ * A collection is installed as a collection. Most published skills arrive
+ * that way — a repository of a dozen under one folder — and asking the user
+ * to paste the same URL a dozen times, once per subdirectory, would be
+ * asking them to do the walk this already did.
+ *
+ * One bad skill does not fail the rest. A repository is somebody else's, its
+ * twelfth skill may have a typo in its frontmatter, and refusing all twelve
+ * over it would be the shell taking a position on files it does not own —
+ * the ones that could not be installed come back named, alongside the ones
+ * that could.
+ *
+ * @param {{input: string, skillsDir: string, originsFile: string,
+ *   fetchImpl?: typeof fetch, log?: (line: string) => void}} options
+ * @returns {Promise<{installed: {name: string, dir: string}[],
+ *   skipped: {where: string, code: string, detail?: string}[]}>}
+ */
+export async function installFromGitHub({ input, skillsDir, originsFile, fetchImpl, log }) {
+  const source = parseSource(input)
+  if (source === undefined) throw refuse('source-not-github', String(input))
+
+  const sha = await resolveCommit({ repo: source.repo, ref: source.ref, fetchImpl })
+  const { dir: tree, dispose } = await downloadRepo({ repo: source.repo, sha, fetchImpl, log })
+  try {
+    const found = await findSkills(tree, source.subpath)
+    if (found.length === 0) throw refuse('no-skill-file', source.repo)
+    log?.(`${source.repo}@${sha.slice(0, 7)}: ${found.length} skill${found.length === 1 ? '' : 's'}`)
+
+    const installed = []
+    const skipped = []
+    for (const relative of found) {
+      const from = path.join(tree, relative)
+      let name
+      try {
+        ({ name } = await validate(path.join(from, SKILL_FILE)))
+        const dir = await claim(skillsDir, name)
+        await cp(from, dir, { recursive: true })
+        await writeOrigins(originsFile, origins => {
+          origins[name] = {
+            repo: source.repo,
+            sha,
+            ...source.ref ? { ref: source.ref } : {},
+            ...relative ? { subpath: relative } : {},
+          }
+        })
+        installed.push({ name, dir })
+        log?.(`skill ${name} installed from ${source.repo}`)
+      } catch (error) {
+        skipped.push({ where: relative || source.repo, code: error.code ?? 'unreadable-file', detail: error.detail })
+        log?.(`skill ${relative || source.repo} skipped: ${error.code ?? error.message}`)
+      }
+    }
+    if (installed.length === 0 && skipped.length > 0) {
+      // Nothing landed, so the operation failed rather than partly succeeded;
+      // the first reason is the one worth putting on the button.
+      throw refuse(skipped[0].code, skipped[0].detail ?? skipped[0].where)
+    }
+    return { installed, skipped }
+  } finally {
+    await dispose()
+  }
+}
+
+/**
+ * Re-fetches a skill from the source it was installed from.
+ *
+ * Whether it was switched off survives the replacement: that is the user's
+ * decision about their own machine, not a property of the copy, and an
+ * update that quietly switched a skill back on would be one they never asked
+ * for and might not notice.
+ *
+ * @param {{entry: string, skillsDir: string, originsFile: string,
+ *   fetchImpl?: typeof fetch, log?: (line: string) => void}} options
+ * @returns {Promise<{name: string, sha: string, changed: boolean}>}
+ */
+export async function updateSkill({ entry, skillsDir, originsFile, fetchImpl, log }) {
+  const origins = await readOrigins(originsFile)
+  const origin = origins[entry]
+  if (origin?.repo === undefined) throw refuse('no-origin', entry)
+
+  const sha = await resolveCommit({ repo: origin.repo, ref: origin.ref, fetchImpl })
+  if (sha === origin.sha) return { name: entry, sha, changed: false }
+
+  const { dir: tree, dispose } = await downloadRepo({ repo: origin.repo, sha, fetchImpl, log })
+  try {
+    // The recorded subpath first; a repository that has since rearranged
+    // itself falls back to the search, which is how a skill that moved one
+    // directory up stays updatable instead of becoming an error.
+    const candidates = await findSkills(tree, origin.subpath).catch(() => [])
+    const relative = candidates[0] ?? (await findSkills(tree)).find(found => path.basename(found) === entry)
+    if (relative === undefined) throw refuse('no-skill-file', origin.repo)
+
+    const from = path.join(tree, relative)
+    await validate(path.join(from, SKILL_FILE))
+    const dir = path.join(skillsDir, entry)
+    const parked = await exists(path.join(dir, SKILL_FILE + DISABLED_SUFFIX))
+    await rm(dir, { recursive: true, force: true })
+    await cp(from, dir, { recursive: true })
+    if (parked) await rename(path.join(dir, SKILL_FILE), path.join(dir, SKILL_FILE + DISABLED_SUFFIX))
+    await writeOrigins(originsFile, saved => { saved[entry] = { ...origin, sha, subpath: relative } })
+    log?.(`skill ${entry} updated to ${sha.slice(0, 7)}`)
+    return { name: entry, sha, changed: true }
+  } finally {
+    await dispose()
+  }
+}
+
+/**
  * Removes an installed skill.
  *
  * The entry name is resolved against the root and checked to still be inside
@@ -108,11 +219,15 @@ export async function installFromZip({ zipPath, skillsDir, log }) {
  *
  * @param {{skillsDir: string, entry: string}} options
  */
-export async function removeSkill({ skillsDir, entry }) {
+export async function removeSkill({ skillsDir, entry, originsFile }) {
   const dir = path.resolve(skillsDir, entry)
   const root = path.resolve(skillsDir)
   if (dir === root || !dir.startsWith(root + path.sep)) throw refuse('outside-root', entry)
   await rm(dir, { recursive: true, force: true })
+  // The note goes with the skill: leaving it behind would offer an update for
+  // something that is no longer installed, and claim the name if it came back
+  // from somewhere else.
+  if (originsFile) await writeOrigins(originsFile, origins => { delete origins[entry] }).catch(() => {})
 }
 
 /**
@@ -185,4 +300,8 @@ async function claim(skillsDir, name) {
   if (await stat(dir).then(() => true).catch(() => false)) throw refuse('already-installed', name)
   await mkdir(skillsDir, { recursive: true })
   return dir
+}
+
+async function exists(target) {
+  return stat(target).then(() => true).catch(() => false)
 }

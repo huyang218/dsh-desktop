@@ -19,6 +19,19 @@ contextBridge.exposeInMainWorld('dshSkills', {
   installDirectory: source => ipcRenderer.invoke('skills:install-directory', source),
   /** Unpacks a skill zip into the user's skill root. */
   installZip: zipPath => ipcRenderer.invoke('skills:install-zip', zipPath),
+  /**
+   * Installs every skill a GitHub repository holds, or the one a /tree/ link
+   * points into: { installed: [{name, dir}], skipped: [{where, code}] }.
+   */
+  installGitHub: input => ipcRenderer.invoke('skills:install-github', input),
+  /** Which installed skills have moved on at their source: { [entry]: sha }. */
+  checkUpdates: () => ipcRenderer.invoke('skills:check-updates'),
+  /** Re-fetches one skill from the source it was installed from. */
+  update: entry => ipcRenderer.invoke('skills:update', entry),
+  /** The market catalog, filtered to skills; `force` skips the disk cache. */
+  catalog: force => ipcRenderer.invoke('skills:catalog', force),
+  /** Opens a catalog link in the user's browser. */
+  openLink: url => ipcRenderer.invoke('skills:open-link', url),
   /** Switches an installed skill off or back on, without removing it. */
   setEnabled: (entry, enabled) => ipcRenderer.invoke('skills:set-enabled', entry, enabled),
   /** Deletes an installed skill and everything in its directory. */

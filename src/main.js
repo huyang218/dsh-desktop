@@ -32,7 +32,10 @@ import {
   getDisabledPlugins, getPluginConfigValues, probePluginConfig, setPluginConfig, setPluginDisabled,
 } from './plugin-config.js'
 import { normalizeSpec } from './plugin-spec.js'
-import { installFromDirectory, installFromZip, removeSkill, SKILLS_DIR } from './skill-install.js'
+import {
+  installFromDirectory, installFromGitHub, installFromZip, removeSkill, SKILLS_DIR, updateSkill,
+} from './skill-install.js'
+import { findSkillUpdates, readOrigins } from './skill-source.js'
 import { listSkills, setEnabled as setSkillEnabled } from './skills.js'
 import { findPluginUpdates } from './plugin-updates.js'
 import { PLUGIN_DIR, unpackPluginZip } from './plugin-zip.js'
@@ -123,6 +126,9 @@ function initPaths() {
   paths.logDir = locations.logDir
   paths.logFile = path.join(locations.logDir, 'dsh-desktop.log')
   paths.settingsFile = path.join(userData, 'settings.json')
+  // Where each skill came from. The shell's own note, so it lives with the
+  // shell's settings rather than inside the folder the user edits by hand.
+  paths.skillOrigins = path.join(userData, 'skill-origins.json')
   mkdirSync(paths.dshHome, { recursive: true })
 }
 
@@ -1590,6 +1596,34 @@ function registerSkillIpc() {
   ipcMain.handle('skills:install-zip', (_event, zipPath) => installFromZip({
     zipPath: String(zipPath), skillsDir: skillsDir(), log: skillsLog,
   }))
+  ipcMain.handle('skills:install-github', (_event, input) => installFromGitHub({
+    input: String(input), skillsDir: skillsDir(), originsFile: paths.skillOrigins,
+    fetchImpl: net.fetch, log: skillsLog,
+  }))
+
+  // Origins are read here rather than in the window so the page never sees
+  // a path on this machine; it only needs to know which entries can update.
+  ipcMain.handle('skills:check-updates', async () => findSkillUpdates({
+    origins: await readOrigins(paths.skillOrigins), fetchImpl: net.fetch, log: skillsLog,
+  }))
+  ipcMain.handle('skills:update', async (_event, entry) => {
+    const skill = await writableSkill(entry)
+    return updateSkill({
+      entry: skill.entry, skillsDir: skillsDir(), originsFile: paths.skillOrigins,
+      fetchImpl: net.fetch, log: skillsLog,
+    })
+  })
+
+  // The same catalog and the same cache as the plugin market: one document
+  // classifies both, and a second copy of it would go stale separately.
+  ipcMain.handle('skills:catalog', async (_event, force) => {
+    const catalog = await loadCatalog({
+      url: catalogUrl(), cacheFile: paths.marketCache, force: force === true,
+      fetchImpl: net.fetch, log: skillsLog,
+    })
+    return { ...catalog, entries: catalog.entries.filter(entry => entry.kind === 'skill') }
+  })
+  ipcMain.handle('skills:open-link', (_event, url) => openMarketLink(url))
 
   ipcMain.handle('skills:set-enabled', async (_event, entry, enabled) => {
     const skill = await writableSkill(entry)
@@ -1599,7 +1633,7 @@ function registerSkillIpc() {
 
   ipcMain.handle('skills:remove', async (_event, entry) => {
     const skill = await writableSkill(entry)
-    await removeSkill({ skillsDir: skillsDir(), entry: skill.entry })
+    await removeSkill({ skillsDir: skillsDir(), entry: skill.entry, originsFile: paths.skillOrigins })
     skillsLog(`${skill.name ?? skill.entry} removed`)
   })
 
