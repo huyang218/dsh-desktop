@@ -1,46 +1,72 @@
 /**
  * Where a skill came from, and whether it has moved on since.
  *
- * A skill has no version. There is no registry to ask, no manifest that
- * declares one, nothing in the file that changes when its author edits it —
- * which leaves "update this skill" with no meaning at all unless the shell
- * remembers where the copy came from. So it does: an install from GitHub
- * writes down the repository, the path inside it, and the commit that was
- * current, and updating is fetching that repository again and seeing whether
- * the commit moved.
+ * A skill has no version. No registry declares one, no manifest carries one,
+ * and nothing in the file changes when its author edits it — so "update this
+ * skill" means nothing unless the shell remembers where the copy came from.
+ * So it does, and the note it keeps is chosen for what checking it costs.
  *
- * The index lives with the shell's own settings rather than inside the skill
- * directory. A file dropped in there would sit in a folder the user edits by
- * hand and syncs between machines, and it is not theirs — it is the shell's
- * note to itself. Skills installed from a local folder get no entry, which is
- * the honest answer for a copy whose source may since have been deleted or
- * moved: they show no update, rather than a broken one.
+ * Nothing here downloads a repository. The first attempt did — a zipball per
+ * install, another per update — which is megabytes to place three kilobytes,
+ * and it asked the API for a commit per repository per check, against an
+ * unauthenticated limit of sixty an hour shared with everything else the app
+ * does. Conditional requests do not rescue that: a 304 from api.github.com
+ * decrements the remaining count exactly as a 200 does, which is worth
+ * knowing before building on the opposite assumption.
+ *
+ * What this uses instead:
+ *
+ * - **One trees call to find skills.** `git/trees/…?recursive=1` returns the
+ *   whole file list in a single request, tens of kilobytes, and the SKILL.md
+ *   paths fall out of it. Nothing is fetched to discover what is there.
+ * - **raw.githubusercontent.com to fetch and to check.** It carries no
+ *   rate-limit headers because it is not the API, it honours `If-None-Match`,
+ *   and an unchanged file answers 304 with no body. An update check is
+ *   therefore one conditional GET per skill that costs no quota and, in the
+ *   common case, no bytes.
+ *
+ * The consequence, stated plainly because it is a real limit: an update is
+ * offered when the skill's own SKILL.md changed. A repository that edits only
+ * a resource beside it goes unnoticed until the skill's text moves too. That
+ * is the price of not spending the API on every skill on every check, and for
+ * a file that *is* the skill it is a fair one.
  *
  * Deliberately free of Electron imports; the caller injects fetch.
  */
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { extractZip } from './zip.js'
 
-/** A repository archive; anything larger is not a skill collection. */
-const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 30_000
-/** How deep to look for skills in a downloaded tree. */
-const MAX_DEPTH = 4
-/** How many skills one repository may install at once. */
-const MAX_SKILLS = 64
+/**
+ * A skill's own files; more than this is a repository, not a skill.
+ *
+ * Generous, and checked where it can be reported. An early version applied it
+ * as a filter while listing, which dropped a perfectly good 43-file skill out
+ * of the results with nothing said — the exact silence this whole feature
+ * exists to end, reproduced inside it.
+ */
+const MAX_FILES = 250
+/** One file. A skill is prose and a few references. */
+const MAX_FILE_BYTES = 4 * 1024 * 1024
+/** Everything one skill brings with it. */
+const MAX_SKILL_BYTES = 32 * 1024 * 1024
+/** How many of a skill's files to fetch at once. */
+const CONCURRENCY = 5
+
+export const SKILL_FILE = 'SKILL.md'
 
 /**
  * @typedef {object} Origin
  * @property {string} repo `owner/name`
- * @property {string} [subpath] the directory inside the repository, when the
- *   skill is one of several it holds
- * @property {string} sha the commit this copy was taken from
+ * @property {string} [subpath] the directory inside the repository
  * @property {string} [ref] the branch or tag asked for, when one was
+ * @property {string} [etag] of SKILL.md, for the next conditional request
+ * @property {string} [digest] of SKILL.md, because an ETag can change while
+ *   the bytes do not — a CDN is entitled to that, and offering an update
+ *   over it would be a lie the user cannot check
  */
 
-/** GitHub's own limits for the two path segments. */
 const OWNER_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
 /**
@@ -51,11 +77,8 @@ const OWNER_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 const GITHUB_URL = /^(?:https?:\/\/(?:www\.)?github\.com\/|github:)([^/]+\/[^/?#]+?)(?:\.git)?(?:\/tree\/([^/]+)(?:\/(.+?))?)?\/?$/
 
 /**
- * Reads whatever the user pasted as a repository and a place inside it.
- *
- * @param {string} input
+ * @param {string} input whatever the user pasted
  * @returns {{repo: string, ref?: string, subpath?: string}|undefined}
- *   undefined when this is not a GitHub reference at all
  */
 export function parseSource(input) {
   const raw = String(input ?? '').trim()
@@ -69,109 +92,142 @@ export function parseSource(input) {
 }
 
 /**
- * The commit a reference currently points at.
+ * The skills a repository holds, and the files each is made of.
  *
- * One request, and the same one for a check and for an install: asking for
- * the newest commit of a branch answers both "what is there" and "has it
- * moved", and the unauthenticated rate limit is low enough that a second
- * request per skill would be felt.
+ * One request for any number of skills. The tree comes back flat, so a skill
+ * is a directory holding a SKILL.md and its files are the entries beneath
+ * that directory — no walking, no second request, and nothing fetched that
+ * the user did not ask to install.
  *
- * @param {{repo: string, ref?: string, fetchImpl?: typeof fetch}} options
- * @returns {Promise<string>} the full commit sha
+ * @param {{repo: string, ref?: string, subpath?: string, fetchImpl?: typeof fetch}} options
+ * @returns {Promise<{skills: {subpath: string, files: {path: string, size: number}[]}[]}>}
  */
-export async function resolveCommit({ repo, ref, fetchImpl = fetch }) {
-  const query = ref ? `?per_page=1&sha=${encodeURIComponent(ref)}` : '?per_page=1'
-  const commits = await getJson(`https://api.github.com/repos/${repo}/commits${query}`, fetchImpl)
-  const sha = Array.isArray(commits) ? commits[0]?.sha : undefined
-  if (typeof sha !== 'string' || sha === '') throw refuse('source-no-commit', repo)
-  return sha
-}
+export async function listRepoSkills({ repo, ref, subpath, fetchImpl = fetch }) {
+  const tree = await getJson(
+    `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(ref ?? 'HEAD')}?recursive=1`,
+    fetchImpl,
+  )
+  const blobs = (tree?.tree ?? []).filter(entry => entry.type === 'blob')
 
-/**
- * Downloads a repository at one commit and unpacks it.
- *
- * Straight from codeload rather than through the API's redirect: the archive
- * is the one thing here that does not have to spend a request against an
- * hourly limit shared with the update checks.
- *
- * @param {{repo: string, sha: string, fetchImpl?: typeof fetch, log?: (line: string) => void}} options
- * @returns {Promise<{dir: string, dispose: () => Promise<void>}>}
- */
-export async function downloadRepo({ repo, sha, fetchImpl = fetch, log }) {
-  const staging = await mkdtemp(path.join(tmpdir(), 'dsh-skill-'))
-  const dispose = () => rm(staging, { recursive: true, force: true }).catch(() => {})
-  try {
-    const archive = path.join(staging, 'repo.zip')
-    const response = await withTimeout(signal => fetchImpl(
-      `https://codeload.github.com/${repo}/zip/${sha}`, { signal },
-    ))
-    if (!response.ok) throw refuse('source-unreachable', `HTTP ${response.status}`)
-    const bytes = new Uint8Array(await response.arrayBuffer())
-    if (bytes.byteLength > MAX_ARCHIVE_BYTES) throw refuse('source-too-large', repo)
-    await writeFile(archive, bytes)
-    const unpacked = path.join(staging, 'tree')
-    await extractZip(archive, unpacked, { log })
-    // GitHub wraps everything in one `name-sha` directory.
-    const entries = (await readdir(unpacked, { withFileTypes: true })).filter(e => e.isDirectory())
-    return { dir: entries.length === 1 ? path.join(unpacked, entries[0].name) : unpacked, dispose }
-  } catch (error) {
-    await dispose()
-    throw error
+  const wanted = subpath === undefined ? undefined : subpath.replace(/\/+$/, '')
+  const roots = blobs
+    .filter(entry => entry.path === SKILL_FILE || entry.path.endsWith('/' + SKILL_FILE))
+    .map(entry => entry.path.slice(0, -SKILL_FILE.length).replace(/\/$/, ''))
+    .filter(root => wanted === undefined || root === wanted || root.startsWith(wanted + '/'))
+
+  const skills = roots.map(root => ({
+    subpath: root,
+    files: blobs
+      .filter(entry => (root === '' ? true : entry.path.startsWith(root + '/')))
+      // A nested skill's files belong to it, not to its parent: a collection
+      // whose root also holds a SKILL.md would otherwise claim every file in
+      // the repository as its own.
+      .filter(entry => !roots.some(other => other !== root && other.startsWith(root === '' ? '' : root + '/')
+        && entry.path.startsWith(other + '/')))
+      .map(entry => ({ path: entry.path, size: Number(entry.size) || 0 })),
+  })).filter(skill => skill.files.length > 0)
+
+  if (skills.length === 0 && tree?.truncated === true) {
+    // The tree came back cut short and nothing was found in what arrived.
+    // Saying so beats reporting "no skills here" about a repository that has
+    // them, and the fix — link to the directory — is one the user can act on.
+    throw refuse('source-too-large', repo)
   }
+  return { skills }
 }
 
 /**
- * Every skill in a downloaded tree, as a path relative to its root.
+ * Downloads one skill's files into a directory.
  *
- * The three layouts the published collections actually use are all just this
- * search: a `SKILL.md` at the top for a repository that is one skill, and any
- * number of them nested for a repository that is a collection — which is why
- * nothing here special-cases a `skills/` directory. Depth is bounded because
- * an unbounded walk of an arbitrary repository is somebody else's node_modules.
- *
- * @param {string} root
- * @param {string} [subpath] restrict the search to one directory
- * @returns {Promise<string[]>} directories, relative to `root`, holding a SKILL.md
+ * @param {{repo: string, ref?: string, files: {path: string, size: number}[],
+ *   subpath: string, dest: string, fetchImpl?: typeof fetch}} options
+ * @returns {Promise<{etag?: string, digest: string}>} the SKILL.md's identity,
+ *   which is what a later check compares against
  */
-export async function findSkills(root, subpath) {
-  const base = subpath ? path.join(root, subpath) : root
-  const found = []
-  const walk = async (dir, depth) => {
-    if (found.length >= MAX_SKILLS || depth > MAX_DEPTH) return
-    let entries
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      return
+export async function fetchSkill({ repo, ref, files, subpath, dest, fetchImpl = fetch }) {
+  // Checked here rather than while listing, so an oversized skill is a
+  // refusal the user can read next to the ones that installed, not an entry
+  // that quietly failed to appear.
+  if (files.length > MAX_FILES) throw refuse('source-too-many-files', String(files.length))
+  const total = files.reduce((sum, file) => sum + file.size, 0)
+  if (total > MAX_SKILL_BYTES) throw refuse('source-too-large', `${Math.round(total / 1024 / 1024)}MB`)
+
+  let identity
+  const queue = [...files]
+  const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      if (next.size > MAX_FILE_BYTES) throw refuse('source-too-large', next.path)
+      const relative = subpath === '' ? next.path : next.path.slice(subpath.length + 1)
+      const target = path.join(dest, relative)
+      const { body, etag } = await getRaw({ repo, ref, filePath: next.path, fetchImpl })
+      await mkdir(path.dirname(target), { recursive: true })
+      await writeFile(target, body)
+      if (relative === SKILL_FILE) identity = { ...etag ? { etag } : {}, digest: digestOf(body) }
     }
-    if (entries.some(entry => entry.isFile() && entry.name === 'SKILL.md')) {
-      found.push(path.relative(root, dir))
-      // Not descending further: a skill's own directory holds its resources,
-      // and a SKILL.md among them is a reference, not a second skill.
-      return
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue
-      await walk(path.join(dir, entry.name), depth + 1)
-    }
-  }
-  await walk(base, 0)
-  return found
+  })
+  await Promise.all(workers)
+  if (identity === undefined) throw refuse('no-skill-file', subpath || repo)
+  return identity
 }
 
 /**
- * The recorded origins, keyed by the entry name in the skills directory.
+ * Whether a skill's own file has changed at its source.
  *
- * @param {string} file
- * @returns {Promise<Record<string, Origin>>}
+ * The conditional request is the whole point: an unchanged skill answers 304
+ * with no body, off a CDN that has no rate limit to spend. Fifty installed
+ * skills cost fifty small round trips and nothing else.
+ *
+ * @param {{origin: Origin, fetchImpl?: typeof fetch}} options
+ * @returns {Promise<{changed: boolean, etag?: string, digest?: string}>}
  */
+export async function probeSkill({ origin, fetchImpl = fetch }) {
+  const filePath = origin.subpath ? `${origin.subpath}/${SKILL_FILE}` : SKILL_FILE
+  const { status, body, etag } = await getRaw({
+    repo: origin.repo, ref: origin.ref, filePath, etag: origin.etag, fetchImpl,
+  })
+  if (status === 304) return { changed: false, etag: origin.etag, digest: origin.digest }
+  const digest = digestOf(body)
+  // The digest decides, not the ETag: a CDN may hand out a new one for the
+  // same bytes, and an update badge the user cannot explain is worse than a
+  // missed one.
+  return { changed: origin.digest !== undefined && digest !== origin.digest, etag, digest }
+}
+
+/**
+ * Which installed skills have changed at their source.
+ *
+ * @param {{origins: Record<string, Origin>, fetchImpl?: typeof fetch,
+ *   log?: (line: string) => void}} options
+ * @returns {Promise<Record<string, {digest: string, etag?: string}>>}
+ */
+export async function findSkillUpdates({ origins, fetchImpl = fetch, log }) {
+  const entries = Object.entries(origins).filter(([, origin]) => origin?.repo)
+  const updates = {}
+  const queue = [...entries]
+  const workers = Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      const [entry, origin] = next
+      try {
+        const result = await probeSkill({ origin, fetchImpl })
+        if (result.changed) updates[entry] = { digest: result.digest, ...result.etag ? { etag: result.etag } : {} }
+      } catch (error) {
+        // One unreachable repository must not hide the others' answers.
+        log?.(`update check: ${entry}: ${error?.code ?? error?.message ?? error}`)
+      }
+    }
+  })
+  await Promise.all(workers)
+  return updates
+}
+
+/** @param {string} file @returns {Promise<Record<string, Origin>>} */
 export async function readOrigins(file) {
   try {
     const parsed = JSON.parse(await readFile(file, 'utf8'))
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
-    // A missing or unreadable index means no skill has a known origin, which
-    // is exactly what a fresh install looks like — not an error to report.
+    // A missing index means no skill has a known origin, which is what a
+    // fresh install looks like — not an error to report.
     return {}
   }
 }
@@ -188,37 +244,27 @@ export async function writeOrigins(file, mutate) {
   return origins
 }
 
-/**
- * Which installed skills have moved on at their source.
- *
- * Repositories are asked once each however many skills came from them: a
- * collection of twelve is one commit, and twelve requests against a limit of
- * sixty an hour would be the difference between working and not.
- *
- * @param {{origins: Record<string, Origin>, fetchImpl?: typeof fetch, log?: (line: string) => void}} options
- * @returns {Promise<Record<string, string>>} entry name → the newer commit
- */
-export async function findSkillUpdates({ origins, fetchImpl = fetch, log }) {
-  const heads = new Map()
-  const updates = {}
-  for (const [entry, origin] of Object.entries(origins)) {
-    if (!origin?.repo || !origin?.sha) continue
-    const key = `${origin.repo}@${origin.ref ?? ''}`
-    if (!heads.has(key)) {
-      heads.set(key, resolveCommit({ repo: origin.repo, ref: origin.ref, fetchImpl }).catch(error => {
-        // One unreachable repository must not hide the others' answers.
-        log?.(`update check: ${origin.repo}: ${error?.message ?? error}`)
-        return undefined
-      }))
-    }
-    const head = await heads.get(key)
-    if (head !== undefined && head !== origin.sha) updates[entry] = head
-  }
-  return updates
+function digestOf(body) {
+  return createHash('sha256').update(body).digest('hex').slice(0, 16)
 }
 
-function refuse(code, detail) {
-  return Object.assign(new Error(detail ? `${code}: ${detail}` : code), { code, detail })
+/**
+ * One file from the raw CDN, conditionally when an ETag is known.
+ *
+ * @returns {Promise<{status: number, body: Buffer, etag?: string}>}
+ */
+async function getRaw({ repo, ref, filePath, etag, fetchImpl }) {
+  const url = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(ref ?? 'HEAD')}/`
+    + filePath.split('/').map(encodeURIComponent).join('/')
+  const response = await withTimeout(signal => fetchImpl(url, {
+    headers: etag ? { 'if-none-match': etag } : {}, signal,
+  }))
+  if (response.status === 304) return { status: 304, body: Buffer.alloc(0) }
+  if (response.status === 404) throw refuse('source-not-found', filePath)
+  if (!response.ok) throw refuse('source-unreachable', `HTTP ${response.status}`)
+  const body = Buffer.from(await response.arrayBuffer())
+  if (body.byteLength > MAX_FILE_BYTES) throw refuse('source-too-large', filePath)
+  return { status: response.status, body, etag: response.headers.get('etag') ?? undefined }
 }
 
 async function getJson(url, fetchImpl) {
@@ -229,9 +275,13 @@ async function getJson(url, fetchImpl) {
   // GitHub request the app makes, so it is named rather than reported as a
   // bare 403 the user would read as "this repository is private".
   if (response.status === 403 || response.status === 429) throw refuse('source-rate-limited')
-  if (response.status === 404) throw refuse('source-not-found', url.split('/repos/')[1]?.split('/commits')[0])
+  if (response.status === 404) throw refuse('source-not-found', url.split('/repos/')[1]?.split('/git/')[0])
   if (!response.ok) throw refuse('source-unreachable', `HTTP ${response.status}`)
   return await response.json()
+}
+
+function refuse(code, detail) {
+  return Object.assign(new Error(detail ? `${code}: ${detail}` : code), { code, detail })
 }
 
 async function withTimeout(run) {

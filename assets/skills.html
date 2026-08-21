@@ -352,9 +352,7 @@
       if (skill.writable && updates[skill.entry]) {
         actions.append(button(t('skills.update'), 'small primary', () => act(async () => {
           const result = await dshSkills.update(skill.entry)
-          appendLog(result.changed
-            ? t('skills.updated', { name: result.name, sha: result.sha.slice(0, 7) })
-            : t('skills.noUpdate', { name: result.name }))
+          appendLog(t(result.changed ? 'skills.updated' : 'skills.noUpdate', { name: result.name }))
           delete updates[skill.entry]
         })))
       }

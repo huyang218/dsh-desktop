@@ -20,14 +20,31 @@
  * same shape `plugin-zip.js` uses and for the same reason: a broken archive
  * leaves whatever was installed before exactly as it was.
  */
-import { cp, mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { inspect, DISABLED_SUFFIX, SKILL_FILE } from './skills.js'
-import { downloadRepo, findSkills, parseSource, readOrigins, resolveCommit, writeOrigins } from './skill-source.js'
+import { fetchSkill, listRepoSkills, parseSource, probeSkill, readOrigins, writeOrigins } from './skill-source.js'
 import { extractZip } from './zip.js'
 
 /** Directory under DSH_HOME that holds the user's own skills. */
 export const SKILLS_DIR = 'skills'
+
+/**
+ * Where a download assembles before it becomes a skill.
+ *
+ * Beside the skills directory rather than inside it: dsh watches that
+ * directory and skips no name but `.system`, so a half-written skill staged
+ * within it is one dsh can discover mid-write. One level up is out of its
+ * sight and still on the same filesystem, which is what makes arriving a
+ * rename instead of a copy that can half-finish.
+ *
+ * @param {string} skillsDir
+ */
+async function staging(skillsDir) {
+  const parent = path.join(skillsDir, '..', '.skill-staging')
+  await mkdir(parent, { recursive: true })
+  return mkdtemp(path.join(parent, 'work-'))
+}
 
 /**
  * Refusals carry a code rather than a sentence: the reasons are the same
@@ -85,18 +102,18 @@ export async function installFromZip({ zipPath, skillsDir, log }) {
   await mkdir(skillsDir, { recursive: true })
   // Beside the destination, so moving in is a rename inside one filesystem
   // rather than a copy that can half-finish.
-  const staging = path.join(skillsDir, `.staging-${process.pid}-${Date.now()}`)
+  const stagingDir = await staging(skillsDir)
   try {
-    const { files } = await extractZip(zipPath, staging, { log })
+    const { files } = await extractZip(zipPath, stagingDir, { log })
     log?.(`zip: unpacked ${files} file${files === 1 ? '' : 's'} from ${path.basename(zipPath)}`)
-    const root = await findSkillRoot(staging)
+    const root = await findSkillRoot(stagingDir)
     const { name } = await validate(path.join(root, SKILL_FILE))
     const dir = await claim(skillsDir, name)
     await rename(root, dir)
     log?.(`skill ${name} unpacked into ${dir}`)
     return { name, dir }
   } finally {
-    await rm(staging, { recursive: true, force: true }).catch(() => { /* best effort */ })
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => { /* best effort */ })
   }
 }
 
@@ -104,16 +121,19 @@ export async function installFromZip({ zipPath, skillsDir, log }) {
  * Installs every skill a GitHub repository holds, or the one a link points
  * into.
  *
- * A collection is installed as a collection. Most published skills arrive
- * that way — a repository of a dozen under one folder — and asking the user
- * to paste the same URL a dozen times, once per subdirectory, would be
- * asking them to do the walk this already did.
+ * One request finds them all and nothing is downloaded to look: the tree
+ * listing names every file, and only the files of the skills being installed
+ * are fetched, from a CDN that costs no API quota. Installing one skill out
+ * of a large collection therefore costs roughly that skill's own size, which
+ * is the difference between this and pulling the repository down whole.
  *
- * One bad skill does not fail the rest. A repository is somebody else's, its
+ * A collection is installed as a collection. Most published skills arrive
+ * that way — a dozen under one folder — and asking the user to paste the same
+ * URL once per subdirectory would be asking them to redo the walk.
+ *
+ * One bad skill does not fail the rest: a repository is somebody else's, its
  * twelfth skill may have a typo in its frontmatter, and refusing all twelve
- * over it would be the shell taking a position on files it does not own —
- * the ones that could not be installed come back named, alongside the ones
- * that could.
+ * over it would be the shell taking a position on files it does not own.
  *
  * @param {{input: string, skillsDir: string, originsFile: string,
  *   fetchImpl?: typeof fetch, log?: (line: string) => void}} options
@@ -124,89 +144,110 @@ export async function installFromGitHub({ input, skillsDir, originsFile, fetchIm
   const source = parseSource(input)
   if (source === undefined) throw refuse('source-not-github', String(input))
 
-  const sha = await resolveCommit({ repo: source.repo, ref: source.ref, fetchImpl })
-  const { dir: tree, dispose } = await downloadRepo({ repo: source.repo, sha, fetchImpl, log })
-  try {
-    const found = await findSkills(tree, source.subpath)
-    if (found.length === 0) throw refuse('no-skill-file', source.repo)
-    log?.(`${source.repo}@${sha.slice(0, 7)}: ${found.length} skill${found.length === 1 ? '' : 's'}`)
+  const { skills } = await listRepoSkills({ ...source, fetchImpl })
+  if (skills.length === 0) throw refuse('no-skill-file', source.repo)
+  log?.(`${source.repo}: ${skills.length} skill${skills.length === 1 ? '' : 's'}`)
 
-    const installed = []
-    const skipped = []
-    for (const relative of found) {
-      const from = path.join(tree, relative)
-      let name
-      try {
-        ({ name } = await validate(path.join(from, SKILL_FILE)))
-        const dir = await claim(skillsDir, name)
-        await cp(from, dir, { recursive: true })
-        await writeOrigins(originsFile, origins => {
-          origins[name] = {
-            repo: source.repo,
-            sha,
-            ...source.ref ? { ref: source.ref } : {},
-            ...relative ? { subpath: relative } : {},
-          }
-        })
-        installed.push({ name, dir })
-        log?.(`skill ${name} installed from ${source.repo}`)
-      } catch (error) {
-        skipped.push({ where: relative || source.repo, code: error.code ?? 'unreadable-file', detail: error.detail })
-        log?.(`skill ${relative || source.repo} skipped: ${error.code ?? error.message}`)
-      }
+  await mkdir(skillsDir, { recursive: true })
+  const installed = []
+  const skipped = []
+  for (const skill of skills) {
+    // Staged beside the destination so arriving is a rename inside one
+    // filesystem: a download that dies halfway leaves nothing behind.
+    const stagingDir = await staging(skillsDir)
+    try {
+      const identity = await fetchSkill({
+        repo: source.repo, ref: source.ref, files: skill.files, subpath: skill.subpath,
+        dest: stagingDir, fetchImpl,
+      })
+      const { name } = await validate(path.join(stagingDir, SKILL_FILE))
+      const dir = await claim(skillsDir, name)
+      await rename(stagingDir, dir)
+      await writeOrigins(originsFile, origins => {
+        origins[name] = {
+          repo: source.repo,
+          ...source.ref ? { ref: source.ref } : {},
+          ...skill.subpath ? { subpath: skill.subpath } : {},
+          ...identity,
+        }
+      })
+      installed.push({ name, dir })
+      log?.(`skill ${name} installed from ${source.repo}`)
+    } catch (error) {
+      skipped.push({ where: skill.subpath || source.repo, code: error.code ?? 'unreadable-file', detail: error.detail })
+      log?.(`skill ${skill.subpath || source.repo} skipped: ${error.code ?? error.message}`)
+    } finally {
+      await rm(stagingDir, { recursive: true, force: true }).catch(() => { /* best effort */ })
     }
-    if (installed.length === 0 && skipped.length > 0) {
-      // Nothing landed, so the operation failed rather than partly succeeded;
-      // the first reason is the one worth putting on the button.
-      throw refuse(skipped[0].code, skipped[0].detail ?? skipped[0].where)
-    }
-    return { installed, skipped }
-  } finally {
-    await dispose()
   }
+  if (installed.length === 0 && skipped.length > 0) {
+    // Nothing landed, so the operation failed rather than partly succeeded;
+    // the first reason is the one worth putting on the button.
+    throw refuse(skipped[0].code, skipped[0].detail ?? skipped[0].where)
+  }
+  return { installed, skipped }
 }
 
 /**
  * Re-fetches a skill from the source it was installed from.
  *
- * Whether it was switched off survives the replacement: that is the user's
- * decision about their own machine, not a property of the copy, and an
+ * The conditional check comes first and usually ends it: an unchanged skill
+ * answers 304 and nothing else happens, so pressing Update on something
+ * already current costs one small round trip rather than a download.
+ *
+ * Whether the skill was switched off survives the replacement. That is the
+ * user's decision about their own machine, not a property of the copy, and an
  * update that quietly switched a skill back on would be one they never asked
  * for and might not notice.
  *
  * @param {{entry: string, skillsDir: string, originsFile: string,
  *   fetchImpl?: typeof fetch, log?: (line: string) => void}} options
- * @returns {Promise<{name: string, sha: string, changed: boolean}>}
+ * @returns {Promise<{name: string, changed: boolean}>}
  */
 export async function updateSkill({ entry, skillsDir, originsFile, fetchImpl, log }) {
   const origins = await readOrigins(originsFile)
   const origin = origins[entry]
   if (origin?.repo === undefined) throw refuse('no-origin', entry)
 
-  const sha = await resolveCommit({ repo: origin.repo, ref: origin.ref, fetchImpl })
-  if (sha === origin.sha) return { name: entry, sha, changed: false }
+  const probe = await probeSkill({ origin, fetchImpl })
+  if (!probe.changed) {
+    // Still worth writing back: the first check of a skill installed before
+    // this recorded digests has nothing to compare, and learning its identity
+    // now is what makes the next check meaningful.
+    await writeOrigins(originsFile, saved => {
+      saved[entry] = { ...origin, ...probe.etag ? { etag: probe.etag } : {}, ...probe.digest ? { digest: probe.digest } : {} }
+    })
+    return { name: entry, changed: false }
+  }
 
-  const { dir: tree, dispose } = await downloadRepo({ repo: origin.repo, sha, fetchImpl, log })
+  const { skills } = await listRepoSkills({
+    repo: origin.repo, ref: origin.ref, subpath: origin.subpath, fetchImpl,
+  })
+  // The recorded subpath first; a repository that has since rearranged itself
+  // falls back to a skill whose directory still carries the name, which keeps
+  // one that moved a level updatable instead of turning it into an error.
+  const skill = skills[0] ?? skills.find(candidate => path.basename(candidate.subpath) === entry)
+  if (skill === undefined) throw refuse('no-skill-file', origin.repo)
+
+  const stagingDir = await staging(skillsDir)
   try {
-    // The recorded subpath first; a repository that has since rearranged
-    // itself falls back to the search, which is how a skill that moved one
-    // directory up stays updatable instead of becoming an error.
-    const candidates = await findSkills(tree, origin.subpath).catch(() => [])
-    const relative = candidates[0] ?? (await findSkills(tree)).find(found => path.basename(found) === entry)
-    if (relative === undefined) throw refuse('no-skill-file', origin.repo)
-
-    const from = path.join(tree, relative)
-    await validate(path.join(from, SKILL_FILE))
+    const identity = await fetchSkill({
+      repo: origin.repo, ref: origin.ref, files: skill.files, subpath: skill.subpath,
+      dest: stagingDir, fetchImpl,
+    })
+    await validate(path.join(stagingDir, SKILL_FILE))
     const dir = path.join(skillsDir, entry)
     const parked = await exists(path.join(dir, SKILL_FILE + DISABLED_SUFFIX))
     await rm(dir, { recursive: true, force: true })
-    await cp(from, dir, { recursive: true })
+    await rename(stagingDir, dir)
     if (parked) await rename(path.join(dir, SKILL_FILE), path.join(dir, SKILL_FILE + DISABLED_SUFFIX))
-    await writeOrigins(originsFile, saved => { saved[entry] = { ...origin, sha, subpath: relative } })
-    log?.(`skill ${entry} updated to ${sha.slice(0, 7)}`)
-    return { name: entry, sha, changed: true }
+    await writeOrigins(originsFile, saved => {
+      saved[entry] = { ...origin, ...skill.subpath ? { subpath: skill.subpath } : {}, ...identity }
+    })
+    log?.(`skill ${entry} updated`)
+    return { name: entry, changed: true }
   } finally {
-    await dispose()
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => { /* best effort */ })
   }
 }
 
