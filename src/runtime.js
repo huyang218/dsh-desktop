@@ -78,6 +78,38 @@ export async function installedVersion(dir) {
 }
 
 /**
+ * How much heap npm may use while resolving the dsh tree, in megabytes.
+ *
+ * V8 sizes its default heap from the machine's RAM, which on a 7GB build
+ * machine works out to about 2GB — and installing dsh reaches it, so npm is
+ * killed mid-install and the exit arrives as a signal with no code. The same
+ * install on a 16GB machine survives, which is why this looked like a
+ * platform bug rather than a memory one.
+ *
+ * A ceiling, not a reservation: raising it costs nothing on a machine that
+ * never needs the room, and is the difference between installing and dying on
+ * one that does.
+ */
+const NPM_HEAP_MB = 4096
+
+/**
+ * The install child's environment: `childEnv` plus room for npm to resolve in.
+ *
+ * An inherited `--max-old-space-size` is left alone, so a build machine that
+ * has already made this call keeps its own answer.
+ *
+ * @param {{ nodeBin: string, nodeDir: string, npmCli: string }} toolchain
+ * @returns {NodeJS.ProcessEnv}
+ */
+function installEnv(toolchain) {
+  const inherited = process.env.NODE_OPTIONS ?? ''
+  if (inherited.includes('--max-old-space-size')) return childEnv(toolchain)
+  return childEnv(toolchain, {
+    NODE_OPTIONS: `${inherited} --max-old-space-size=${NPM_HEAP_MB}`.trim(),
+  })
+}
+
+/**
  * Installs (or reinstalls) dsh into a slot with npm.
  *
  * @param {object} options
@@ -94,14 +126,19 @@ export async function installIntoSlot({ toolchain, dir, spec = `${DSH_PACKAGE}@l
     const child = spawn(
       toolchain.nodeBin,
       [toolchain.npmCli, 'install', spec, '--prefix', dir, '--no-audit', '--no-fund', '--loglevel=error'],
-      { env: childEnv(toolchain), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      { env: installEnv(toolchain), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     )
     for (const stream of [child.stdout, child.stderr]) {
       stream.setEncoding('utf8')
       stream.on('data', chunk => log?.(chunk.trimEnd()))
     }
     child.on('error', reject)
-    child.on('exit', code => (code === 0 ? resolve() : reject(new Error(t('error.npmExit', { code })))))
+    // A killed npm reports no exit code at all, so saying "code null" hides the
+    // one fact worth having: something ended it from the outside.
+    child.on('exit', (code, signal) => {
+      if (code === 0) return resolve()
+      reject(new Error(signal ? t('error.npmSignal', { signal }) : t('error.npmExit', { code })))
+    })
   })
   const version = await installedVersion(dir)
   if (!version) throw new Error(t('error.npmNoPackage'))

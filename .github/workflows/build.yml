@@ -106,7 +106,9 @@ jobs:
     # the only step that writes anything back to the repository.
     permissions:
       contents: write
-    timeout-minutes: 45
+    # Generous because the seed step is at the mercy of how long npm takes to
+    # resolve dsh: the v0.1.6 Windows build spent 30 of its 33 minutes there.
+    timeout-minutes: 60
     strategy:
       # One platform failing should not hide whether the others are fine.
       fail-fast: false
