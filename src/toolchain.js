@@ -70,12 +70,7 @@ function candidateDirs() {
     return dirs
   }
   dirs.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin')
-  const nvmVersions = path.join(homedir(), '.nvm', 'versions', 'node')
-  if (existsSync(nvmVersions)) {
-    // Highest version first so we prefer the newest installed Node.
-    const versions = readdirSync(nvmVersions).sort().reverse()
-    for (const v of versions) dirs.push(path.join(nvmVersions, v, 'bin'))
-  }
+  dirs.push(...nvmBinDirs())
   return dirs
 }
 
@@ -194,6 +189,11 @@ export function childEnv(toolchain, extra = {}) {
  * on Windows the npm and pnpm shims live under the user's AppData. These are
  * appended, never prepended, so nothing here can shadow the user's own PATH.
  *
+ * pnpm is no longer the only tool this has to find. dsh can delegate to the
+ * Claude Code and Codex CLIs, which it expects on PATH and does not probe for,
+ * so a version manager's bin directory is now the difference between that
+ * feature working and failing with nothing to look at.
+ *
  * @returns {string[]} the candidate directories that exist
  */
 function globalBinDirs() {
@@ -204,14 +204,86 @@ function globalBinDirs() {
       process.env.APPDATA && path.join(process.env.APPDATA, 'npm'),
       process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'pnpm'),
       process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'nodejs'),
+      // nvm-windows keeps the selected version behind this symlink, which is
+      // usually the ProgramFiles path above but is the user's to move.
+      process.env.NVM_SYMLINK,
+      process.env.APPDATA && path.join(process.env.APPDATA, 'fnm', 'aliases', 'default', 'bin'),
     ]
     : [
       process.env.PNPM_HOME,
       path.join(home, '.local', 'bin'),
       path.join(home, 'Library', 'pnpm'),
       path.join(home, '.volta', 'bin'),
+      // asdf and fnm both keep one stable directory that always points at the
+      // active version, so neither needs the enumeration nvm does below.
+      path.join(home, '.asdf', 'shims'),
+      path.join(process.env.FNM_DIR ?? path.join(home, 'Library', 'Application Support', 'fnm'),
+        'aliases', 'default', 'bin'),
+      ...nvmBinDirs(),
       '/opt/homebrew/bin',
       '/usr/local/bin',
     ]
   return [...new Set(candidates.filter(Boolean))].filter(dir => existsSync(dir))
+}
+
+/**
+ * nvm's per-version bin directories, the default version first.
+ *
+ * nvm is a shell function rather than a directory, so it leaves nothing on
+ * PATH for a GUI app to inherit: every global CLI installed under it is
+ * invisible to a double-clicked app while working perfectly in a terminal.
+ * There is no single directory to add either, because each Node version has
+ * its own — and a tool the user installed once lives under exactly one of
+ * them.
+ *
+ * So all of them are offered, ordered so the version the user's own shell
+ * would pick answers first: `nvm alias default` when it names something
+ * installed, then the rest newest-first. They are appended like the others,
+ * so an older version here can never shadow the user's own PATH.
+ *
+ * @returns {string[]} bin directories, which the caller filters for existence
+ */
+function nvmBinDirs() {
+  const root = process.env.NVM_DIR || path.join(homedir(), '.nvm')
+  const versionsDir = path.join(root, 'versions', 'node')
+  let versions
+  try {
+    versions = readdirSync(versionsDir).filter(name => /^v\d/.test(name))
+  } catch {
+    return []
+  }
+  versions.sort((a, b) => {
+    const [left, right] = [a, b].map(v => v.slice(1).split('.').map(Number))
+    for (let i = 0; i < 3; i++) {
+      if ((right[i] ?? 0) !== (left[i] ?? 0)) return (right[i] ?? 0) - (left[i] ?? 0)
+    }
+    return 0
+  })
+  const preferred = nvmDefault(root, versions)
+  const ordered = preferred ? [preferred, ...versions.filter(v => v !== preferred)] : versions
+  return ordered.map(version => path.join(versionsDir, version, 'bin'))
+}
+
+/**
+ * The installed version `nvm alias default` names, if it names one plainly.
+ *
+ * The alias file holds whatever the user aliased: `24`, `v24.13.0`, `lts/jod`,
+ * `node`. Only the forms that point straight at an installed version are
+ * resolved — the rest fall through to newest-first, which is what an
+ * unresolvable alias would most likely have meant anyway.
+ *
+ * @param {string} root nvm's directory
+ * @param {string[]} versions installed versions, newest first
+ * @returns {string | undefined}
+ */
+function nvmDefault(root, versions) {
+  let wanted
+  try {
+    wanted = readFileSync(path.join(root, 'alias', 'default'), 'utf8').trim()
+  } catch {
+    return undefined
+  }
+  if (!/^v?\d/.test(wanted)) return undefined
+  const prefix = wanted.startsWith('v') ? wanted : `v${wanted}`
+  return versions.find(version => version === prefix || version.startsWith(`${prefix}.`))
 }
