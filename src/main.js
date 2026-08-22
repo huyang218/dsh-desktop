@@ -1608,6 +1608,23 @@ function openSkillsWindow() {
   state.skillsWindow = win
 }
 
+/**
+ * Marks a skill operation as in flight, for the badge to report.
+ *
+ * Not a lock — skills have no profile to corrupt and two installs can run —
+ * only a flag, so that the seconds a download takes are seconds the badge
+ * can account for instead of showing "ready" while the user waits.
+ */
+async function withSkillWork(work) {
+  state.skillBusy = (state.skillBusy ?? 0) + 1
+  try {
+    return await work()
+  } finally {
+    state.skillBusy -= 1
+    if (state.skillBusy <= 0) state.skillBusy = undefined
+  }
+}
+
 function registerSkillIpc() {
   ipcMain.handle('skills:list', () => listSkills(skillRoots()))
 
@@ -1631,16 +1648,16 @@ function registerSkillIpc() {
     return canceled ? null : (filePaths?.[0] ?? null)
   })
 
-  ipcMain.handle('skills:install-directory', (_event, source) => installFromDirectory({
+  ipcMain.handle('skills:install-directory', (_event, source) => withSkillWork(() => installFromDirectory({
     source: String(source), skillsDir: skillsDir(), log: skillsLog,
-  }))
-  ipcMain.handle('skills:install-zip', (_event, zipPath) => installFromZip({
+  })))
+  ipcMain.handle('skills:install-zip', (_event, zipPath) => withSkillWork(() => installFromZip({
     zipPath: String(zipPath), skillsDir: skillsDir(), log: skillsLog,
-  }))
-  ipcMain.handle('skills:install-github', (_event, input) => installFromGitHub({
+  })))
+  ipcMain.handle('skills:install-github', (_event, input) => withSkillWork(() => installFromGitHub({
     input: String(input), skillsDir: skillsDir(), originsFile: paths.skillOrigins,
     fetchImpl: net.fetch, log: skillsLog,
-  }))
+  })))
 
   // Origins are read here rather than in the window so the page never sees
   // a path on this machine; it only needs to know which entries can update.
@@ -1718,7 +1735,8 @@ const HUD_INTERVAL_MS = process.platform === 'win32' ? 2000 : 1000
  * showing one number would be mostly empty space held over the user's work.
  */
 const HUD_STYLES = {
-  standard: { width: 232, height: 96 },
+  standard: { width: 232, height: 112 },
+  assistant: { width: 246, height: 74 },
   compact: { width: 214, height: 46 },
   minimal: { width: 112, height: 46 },
 }
@@ -1755,6 +1773,38 @@ function hudOpen() {
 }
 
 /**
+ * What the harness is doing, as far as this shell can honestly say.
+ *
+ * Every one of these is first-hand: the shell owns the server process, runs
+ * the supervision, drives the plugin and skill operations, and performs its
+ * own updates. What the agent is doing inside a conversation is deliberately
+ * absent — dsh serves no status endpoint (every path under / returns the
+ * app's HTML and /api answers 404), the only structured surface is an RPC
+ * that needs an attached session, and the alternative of reading the upstream
+ * UI's DOM would be a contract that breaks the first time it is restyled.
+ * A badge that says less and stays true is worth more than one that guesses.
+ *
+ * Ordered by specificity: an install running during a restart is the install,
+ * because that is the thing a person is waiting on.
+ *
+ * @returns {{kind: string, detail?: string|number}}
+ */
+function hudStatus() {
+  if (state.update?.phase) return { kind: 'updating' }
+  if (state.pluginBusy) return { kind: 'plugin' }
+  if (state.skillBusy) return { kind: 'skill' }
+  if (state.restartTimer) return { kind: 'restarting', detail: state.restarts }
+  if (!state.child) return { kind: 'stopped' }
+  // The port is set when the server answers, so before it there is a process
+  // that is not yet a service — which is what the loading window is showing.
+  if (!state.port) return { kind: 'starting' }
+  return { kind: 'ready' }
+}
+
+/** Above this the badge calls it busy rather than ready. */
+const HUD_BUSY_PERCENT = 25
+
+/**
  * Reads once and sends the result to the badge.
  *
  * The previous sample is kept here rather than in the window so that closing
@@ -1770,14 +1820,19 @@ async function sampleForHud() {
   const previous = state.hudPrevious
   state.hudPrevious = reading
   if (!hudOpen()) return
+  const cpu = cpuPercent(previous, reading)
+  const status = hudStatus()
   state.hud.webContents.send('hud:sample', reading === undefined
-    ? { running: false }
+    ? { running: false, status }
     : {
       running: true,
-      cpu: cpuPercent(previous, reading),
+      cpu,
       rssBytes: reading.rssBytes,
       threads: reading.threads,
       processes: reading.processes,
+      // Busy is a reading, not a state the shell keeps: it is true exactly
+      // when the thing is working hard, whoever asked it to.
+      status: status.kind === 'ready' && (cpu ?? 0) >= HUD_BUSY_PERCENT ? { kind: 'busy' } : status,
     })
 }
 

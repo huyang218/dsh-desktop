@@ -26,7 +26,16 @@
     color: #e9e9ef;
   }
   header { display: flex; align-items: center; gap: 6px; }
-  .title { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: #9a9aa6; }
+  /* The header line carries the status. "dsh 资源" said nothing the window
+     title was not already saying; what it is doing right now is the thing
+     somebody keeps a badge on screen for. */
+  .title { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: #c8c8d2; }
+  .dot.work { background: #ffb454; }
+  .dot.stop { background: #e06a5c; }
+  /* A state that is going somewhere pulses; a resting one does not, so the
+     movement means something rather than being decoration. */
+  .dot.work { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
   /* A dot that says at a glance whether there is anything to measure. */
   .dot { width: 6px; height: 6px; border-radius: 50%; background: #4ac07a; }
   .dot.down { background: #6f6f7b; }
@@ -39,6 +48,16 @@
   .close:hover { color: #e9e9ef; }
 
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .value {
+    font: 600 15px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .value .unit { font-size: 10px; font-weight: 500; color: #8a8a96; margin-left: 1px; }
+  .label { font-size: 10px; color: #7a7a86; white-space: nowrap; }
+  /* Busy is worth noticing without being alarming; the badge is a glance. */
+  .value.busy { color: #ffb454; }
 
   /* The narrow layouts put the close button in the corner rather than in a
      row, so it costs no width, and show it only under the pointer: in a badge
@@ -60,6 +79,22 @@
   .card.compact { padding: 8px 11px; }
   .card.compact .stats { flex: 1; grid-template-columns: none; grid-auto-flow: column; gap: 13px; align-items: center; }
   .card.compact .value { font-size: 14px; }
+
+  /* ── Assistant: the status is the point and the numbers are the footnote,
+     for somebody who keeps it on screen to know what the harness is doing
+     rather than to watch a memory figure. ── */
+  .card.assistant { gap: 5px; padding: 10px 12px; }
+  .card.assistant .title { font-size: 13px; font-weight: 600; color: #e9e9ef; }
+  .card.assistant .dot { width: 7px; height: 7px; }
+  .card.assistant .stats { display: flex; align-items: baseline; gap: 0; grid-template-columns: none; }
+  .card.assistant .stat { flex-direction: row; align-items: baseline; }
+  /* The labels go: in a line this short the units already say which number is
+     which, and four aligned columns would invite a comparison between figures
+     that have nothing to do with each other. */
+  .card.assistant .label { display: none; }
+  .card.assistant .stat:not(:last-child)::after { content: '·'; color: #56565f; margin: 0 7px; }
+  .card.assistant .value { font-size: 12px; font-weight: 500; color: #b8b8c4; }
+  .card.assistant .value .unit { font-size: 10px; }
 
   /* ── Minimal: the one number worth a glance, and a dot for whether there is
      anything behind it. ── */
@@ -95,8 +130,8 @@
   // the badge is small enough that a first frame in the wrong shape would be
   // a visible flinch rather than a detail.
   const style = new URLSearchParams(location.search).get('style')
-  if (style === 'compact' || style === 'minimal') $('card').classList.add(style)
-  $('title').textContent = t('hud.title')
+  if (style === 'compact' || style === 'minimal' || style === 'assistant') $('card').classList.add(style)
+  $('title').textContent = t('hud.status.starting')
   $('close').title = t('hud.close')
   for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n)
   $('close').addEventListener('click', () => dshHud.close())
@@ -119,8 +154,22 @@
     return [Math.round(value / 1024 / 1024).toString(), 'MB']
   }
 
+  /** The status line, and the dot that colours it. */
+  function showStatus(status) {
+    const kind = status?.kind ?? 'stopped'
+    const detail = status?.detail
+    $('title').textContent = detail === undefined
+      ? t('hud.status.' + kind)
+      : t('hud.status.' + kind).replace('{n}', detail)
+    // Working, resting, or nothing to report — three colours, not eight.
+    const tone = kind === 'stopped' ? ' stop'
+      : ['ready'].includes(kind) ? ''
+        : ' work'
+    $('dot').className = 'dot' + tone
+  }
+
   dshHud.onSample(reading => {
-    $('dot').className = reading.running ? 'dot' : 'dot down'
+    showStatus(reading.status)
     if (!reading.running) {
       for (const id of ['cpu', 'mem', 'threads', 'procs']) put(id, '—')
       $('cpu').classList.remove('busy')
