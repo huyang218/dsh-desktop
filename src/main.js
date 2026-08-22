@@ -360,7 +360,11 @@ function showWindow() {
 
 async function launchServer() {
   const { window, runtime } = state
-  const port = await getFreePort()
+  // The port the server had last time, if it is still free. It is part of the
+  // page's origin, and the web UI's own browser storage — the open workspace,
+  // the current session, the sidebar — is partitioned by origin, so a new
+  // port every launch quietly discards all of it.
+  const port = await getFreePort(readSettings().serverPort)
   const startedAt = Date.now()
   const child = await startServer({
     slotDir: runtime.dir,
@@ -381,6 +385,9 @@ async function launchServer() {
   state.child = child
   state.port = port
   const healthy = await waitHealthy(port, { aborted: () => state.quitting || state.child !== child })
+  // Remembered only once it answered: a port that failed to serve is not one
+  // worth preferring next time.
+  if (healthy) writeSettings({ serverPort: port })
   if (!healthy) {
     // Superseded: the child died (the supervisor owns the retry) or we are
     // quitting/restarting. Only a live-but-unresponsive server is our error.
@@ -2395,7 +2402,7 @@ async function main() {
     width: 1280,
     height: 840,
     ...bounds,
-    title: 'DeepSeek Harness',
+    title: BRAND.name,
     // Starting hidden means starting in the tray: the server comes up, the
     // window is built and loaded, and nothing appears until it is asked for.
     show: !settings.startHidden,
