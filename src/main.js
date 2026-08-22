@@ -17,7 +17,7 @@ import {
 } from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -132,6 +132,8 @@ function initPaths() {
   // Where each skill came from. The shell's own note, so it lives with the
   // shell's settings rather than inside the folder the user edits by hand.
   paths.skillOrigins = path.join(userData, 'skill-origins.json')
+  // The badge's own picture, copied here so it survives the source moving.
+  paths.hudDir = path.join(userData, 'hud')
   mkdirSync(paths.dshHome, { recursive: true })
 }
 
@@ -1739,10 +1741,72 @@ const HUD_STYLES = {
   assistant: { width: 246, height: 74 },
   compact: { width: 214, height: 46 },
   minimal: { width: 112, height: 46 },
+  // The character layouts: a drawn face, the state in words beside it, and
+  // the numbers demoted to a footnote. Same width for the three so switching
+  // between them does not move the badge.
+  pup: { width: 244, height: 74 },
+  capybara: { width: 244, height: 74 },
+  anime: { width: 244, height: 74 },
 }
 const DEFAULT_HUD_STYLE = 'standard'
 
 /** The chosen layout, or the default when the setting is absent or unknown. */
+/**
+ * The picture the character layouts draw, when the user has supplied one.
+ *
+ * The app ships drawings of its own and nothing else. Anything with a face
+ * that somebody would actually want here belongs to whoever made it, and
+ * bundling that into an installer this project publishes is not this
+ * project's to do — so the badge reads a file the user points it at instead.
+ * It is copied into the data directory on the way in, because a badge that
+ * broke whenever a folder was tidied would be worse than no badge.
+ *
+ * Any image the renderer can draw works, animated GIF and WebP included,
+ * which is most of what makes one of these feel alive.
+ *
+ * @returns {string|undefined} an absolute path, when one is set and present
+ */
+function hudCharacter() {
+  const saved = readSettings().hudCharacter
+  if (typeof saved !== 'string' || saved === '') return undefined
+  const base = path.join(paths.hudDir, path.basename(saved))
+  if (!existsSync(base)) return undefined
+
+  // One picture is enough and is what the menu produces. Three make it a
+  // character rather than a sticker: drop `character-busy` and
+  // `character-down` beside it, in any format the first one uses or another,
+  // and the badge shows the face that matches what it is reporting. Missing
+  // ones fall back to the base picture, so partial sets work.
+  const stem = base.slice(0, -path.extname(base).length)
+  const variant = suffix => {
+    for (const ext of ['.gif', '.webp', '.apng', '.png', '.svg', '.jpg', '.jpeg']) {
+      const file = `${stem}-${suffix}${ext}`
+      if (existsSync(file)) return file
+    }
+    return base
+  }
+  return { idle: base, busy: variant('busy'), down: variant('down') }
+}
+
+/**
+ * The query string the badge page is loaded with.
+ *
+ * Layout and pictures both travel this way, for the same reason the language
+ * does: the page paints before there is any channel to ask over, and a badge
+ * that flickered from one face to another on every open would be worse than
+ * one that took a moment longer.
+ */
+function hudSearch(style) {
+  const character = hudCharacter()
+  const parts = [`style=${style}`]
+  if (character) {
+    for (const [key, file] of Object.entries(character)) {
+      parts.push(`${key}=${encodeURIComponent(file)}`)
+    }
+  }
+  return parts.join('&')
+}
+
 function hudStyle() {
   const saved = readSettings().hudStyle
   return Object.hasOwn(HUD_STYLES, saved) ? saved : DEFAULT_HUD_STYLE
@@ -1894,7 +1958,7 @@ function openHud() {
   // making the application it belongs to unreachable.
   win.setVisibleOnAllWorkspaces(true)
   if (process.platform !== 'darwin') win.removeMenu()
-  win.loadFile(path.join(assets, 'hud.html'), { search: `style=${style}` })
+  win.loadFile(path.join(assets, 'hud.html'), { search: hudSearch(style) })
 
   const remember = () => {
     if (!win.isDestroyed()) writeSettings({ hudBounds: win.getBounds() })
@@ -1939,6 +2003,45 @@ function raiseHud() {
   state.hud.moveTop()
 }
 
+/**
+ * Adopts an image as the badge's character.
+ *
+ * Copied rather than referenced: the file the user picked is in their
+ * Downloads or on a volume that will be unplugged, and a badge that lost its
+ * face when either happened would be a bug reported as "it broke by itself".
+ */
+async function pickHudCharacter() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(state.hud ?? state.window, {
+    title: t('menu.hudCharacter'),
+    filters: [{ name: 'Image', extensions: ['png', 'gif', 'webp', 'jpg', 'jpeg', 'svg', 'apng'] }],
+    properties: ['openFile'],
+  })
+  const source = canceled ? undefined : filePaths?.[0]
+  if (source === undefined) return
+  await mkdir(paths.hudDir, { recursive: true })
+  const target = path.join(paths.hudDir, `character${path.extname(source).toLowerCase()}`)
+  // One at a time: the old picture goes, so switching does not leave the data
+  // directory collecting every image ever tried.
+  for (const stale of await readdir(paths.hudDir).catch(() => [])) {
+    if (stale !== path.basename(target)) await rm(path.join(paths.hudDir, stale), { force: true }).catch(() => {})
+  }
+  await copyFile(source, target)
+  writeSettings({ hudCharacter: path.basename(target) })
+  reopenHud()
+}
+
+function clearHudCharacter() {
+  writeSettings({ hudCharacter: '' })
+  reopenHud()
+}
+
+/** Reloads the badge in place so a new picture or style is on screen at once. */
+function reopenHud() {
+  if (hudOpen()) setHudStyle(hudStyle())
+  buildMenu()
+  refreshTrayMenu()
+}
+
 function closeHud() {
   if (hudOpen()) state.hud.close()
 }
@@ -1960,7 +2063,7 @@ function setHudStyle(style) {
     const bounds = state.hud.getBounds()
     state.hud.setBounds({ x: bounds.x + bounds.width - size.width, y: bounds.y, ...size })
     writeSettings({ hudBounds: state.hud.getBounds() })
-    state.hud.loadFile(path.join(assets, 'hud.html'), { search: `style=${style}` })
+    state.hud.loadFile(path.join(assets, 'hud.html'), { search: hudSearch(style) })
     // The reload throws away the rendered numbers; the reading behind them is
     // still current, so send it again rather than showing dashes until the
     // next tick comes round.
@@ -2048,6 +2151,9 @@ function actionItems() {
               label: `${hudStyle() === style ? '\u2713' : '\u2007\u2007'} ${t(`hud.style.${style}`)}`,
               click: () => setHudStyle(style),
             })),
+            { type: 'separator' },
+            { label: t('menu.hudCharacter'), click: () => { pickHudCharacter().catch(e => errorDialog(t('menu.hudCharacter'), e)) } },
+            ...(hudCharacter() ? [{ label: t('menu.hudCharacterClear'), click: clearHudCharacter }] : []),
           ],
         },
         {
