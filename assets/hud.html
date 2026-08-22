@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+  /* The window is transparent and frameless; this card is the whole of it,
+     inset far enough that its shadow has somewhere to fall. */
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body {
+    display: flex; padding: 8px;
+    font: 12px/1.35 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    /* The whole card drags: a badge with a title bar would be twice the size
+       for the sake of somewhere to grab. */
+    -webkit-app-region: drag;
+    user-select: none; cursor: default;
+  }
+  .card {
+    flex: 1; display: flex; flex-direction: column; gap: 7px;
+    padding: 9px 11px; border-radius: 11px;
+    background: rgba(22, 22, 28, 0.82);
+    -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+    color: #e9e9ef;
+  }
+  header { display: flex; align-items: center; gap: 6px; }
+  .title { font-size: 11px; font-weight: 600; letter-spacing: .02em; color: #9a9aa6; }
+  /* A dot that says at a glance whether there is anything to measure. */
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: #4ac07a; }
+  .dot.down { background: #6f6f7b; }
+  .spacer { flex: 1; }
+  .close {
+    -webkit-app-region: no-drag;
+    appearance: none; border: none; background: none; cursor: pointer;
+    padding: 0 2px; font-size: 13px; line-height: 1; color: #6f6f7b;
+  }
+  .close:hover { color: #e9e9ef; }
+
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .stat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .value {
+    font: 600 15px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .value .unit { font-size: 10px; font-weight: 500; color: #8a8a96; margin-left: 1px; }
+  .label { font-size: 10px; color: #7a7a86; white-space: nowrap; }
+  /* Busy is worth noticing without being alarming; the badge is a glance. */
+  .value.busy { color: #ffb454; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <span class="dot" id="dot"></span>
+      <span class="title" id="title"></span>
+      <span class="spacer"></span>
+      <button class="close" id="close" title="">✕</button>
+    </header>
+    <div class="stats">
+      <div class="stat"><div class="value" id="cpu">—</div><div class="label" data-i18n="hud.cpu"></div></div>
+      <div class="stat"><div class="value" id="mem">—</div><div class="label" data-i18n="hud.memory"></div></div>
+      <div class="stat"><div class="value" id="threads">—</div><div class="label" data-i18n="hud.threads"></div></div>
+      <div class="stat"><div class="value" id="procs">—</div><div class="label" data-i18n="hud.processes"></div></div>
+    </div>
+  </div>
+<script>
+  const $ = id => document.getElementById(id)
+  const { locale, messages } = dshHud.i18n
+  const t = key => messages[key] ?? key
+  document.documentElement.lang = locale
+  document.title = t('hud.title')
+  $('title').textContent = t('hud.title')
+  $('close').title = t('hud.close')
+  for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n)
+  $('close').addEventListener('click', () => dshHud.close())
+
+  /** A value and its unit, so the unit can be smaller than the number. */
+  function put(id, value, unit) {
+    const node = $(id)
+    node.textContent = ''
+    node.append(document.createTextNode(value))
+    if (unit) {
+      const suffix = document.createElement('span')
+      suffix.className = 'unit'
+      suffix.textContent = unit
+      node.append(suffix)
+    }
+  }
+
+  function bytes(value) {
+    if (value >= 1024 * 1024 * 1024) return [(value / 1024 / 1024 / 1024).toFixed(1), 'GB']
+    return [Math.round(value / 1024 / 1024).toString(), 'MB']
+  }
+
+  dshHud.onSample(reading => {
+    $('dot').className = reading.running ? 'dot' : 'dot down'
+    if (!reading.running) {
+      for (const id of ['cpu', 'mem', 'threads', 'procs']) put(id, '—')
+      $('cpu').classList.remove('busy')
+      return
+    }
+    // Undefined until there are two samples to compare — the first frame
+    // after opening has a memory reading but cannot have a rate yet.
+    if (reading.cpu === undefined || reading.cpu === null) put('cpu', '—')
+    else put('cpu', reading.cpu < 10 ? reading.cpu.toFixed(1) : Math.round(reading.cpu).toString(), '%')
+    $('cpu').classList.toggle('busy', (reading.cpu ?? 0) >= 80)
+    put('mem', ...bytes(reading.rssBytes))
+    put('threads', String(reading.threads || '—'))
+    put('procs', String(reading.processes || '—'))
+  })
+</script>
+</body>
+</html>

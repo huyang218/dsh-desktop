@@ -272,6 +272,15 @@ const MESSAGES = {
     'settings.detected': '检测到环境变量里的代理:{url}(已填入,选「手动指定」即可使用)',
 
 
+    // Performance badge
+    'menu.hud': '性能浮标',
+    'hud.title': 'dsh 资源',
+    'hud.cpu': 'CPU',
+    'hud.memory': '内存',
+    'hud.threads': '线程',
+    'hud.processes': '进程',
+    'hud.close': '关闭浮标',
+
     // Skills manager
     'menu.skills': '技能',
     'menu.skillManage': '技能管理…',
@@ -613,6 +622,14 @@ const MESSAGES = {
     'settings.saved': 'Saved and applied. A dsh server that is already running picks it up when the service restarts.',
     'settings.detected': 'Found a proxy in the environment: {url} (filled in; choose Manual to use it)',
 
+
+    'menu.hud': 'Performance badge',
+    'hud.title': 'dsh usage',
+    'hud.cpu': 'CPU',
+    'hud.memory': 'Memory',
+    'hud.threads': 'Threads',
+    'hud.processes': 'Processes',
+    'hud.close': 'Close the badge',
 
     // Skills manager
     'menu.skills': 'Skills',
