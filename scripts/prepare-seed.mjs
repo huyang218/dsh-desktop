@@ -17,6 +17,7 @@
  * rather than a special-cased command that then goes untested locally.
  */
 import { execFileSync } from 'node:child_process'
+import { BRAND } from '../src/brand.js'
 import { existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -40,9 +41,14 @@ const projectRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..'
 // still read when the app has not been launched since the rename, so packaging
 // works before the migration has run.
 const appSupport = appDataDir()
-const runtimeBase = ['dsh-desktop', 'dsh-shell']
+// This brand's own directory first, then the original's. What is being
+// snapshotted is a dsh install — an npm tree — and which application's data
+// directory it happens to sit in says nothing about its contents. Without the
+// fallback, the first build of a new brand fails on a machine that has run
+// the app a hundred times, merely under another name.
+const runtimeBase = [...new Set([BRAND.dataDir, BRAND.legacyDataDir, 'dsh-desktop', 'dsh-shell'].filter(Boolean))]
   .map(dir => path.join(appSupport, dir, 'runtime'))
-  .find(dir => existsSync(dir)) ?? path.join(appSupport, 'dsh-desktop', 'runtime')
+  .find(dir => existsSync(dir)) ?? path.join(appSupport, BRAND.dataDir, 'runtime')
 
 const bootstrap = process.argv.includes('--bootstrap') || process.env.DSH_SEED_BOOTSTRAP === '1'
 const isComplete = dir => existsSync(path.join(dir, 'node_modules', DSH_PACKAGE, 'package.json'))

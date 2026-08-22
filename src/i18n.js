@@ -61,7 +61,7 @@ const MESSAGES = {
     'menu.copy': '复制',
     'menu.paste': '粘贴',
     'menu.selectAll': '全选',
-    'tray.tooltip': 'DeepSeek Harness(dsh {version})',
+    'tray.tooltip': '{app}(dsh {version})',
     'tray.checking': '正在检查更新…',
     'tray.installing': '正在下载安装 dsh {version} · 已用 {elapsed}',
     'tray.verifying': '新版本启动自检中 · 已用 {elapsed}',
@@ -162,6 +162,7 @@ const MESSAGES = {
     'error.updateNoRelease': '仓库还没有发布任何版本',
     'error.updateNoAsset': '这个版本里找不到更新包 {name}',
     'error.updateNoInstaller': '这个版本没有提供当前平台的安装包',
+    'error.updateNoRepo': '这个版本没有配置更新来源',
     'error.updateChecksum': '更新包校验失败(SHA-256 不匹配),已放弃',
     'error.updateBadBundle': '更新包内容不合法,已放弃',
     'error.updateTooLarge': '更新包超出体积上限,已放弃',
@@ -361,7 +362,7 @@ const MESSAGES = {
     'skills.problem.outside-root': '这个位置不在技能目录里',
 
     // Loading window
-    'loading.starting': '正在启动 DeepSeek Harness…',
+    'loading.starting': '正在启动 {app}…',
     'loading.hint': '首次启动会下载并安装 dsh 运行时,可能需要几分钟',
   },
 
@@ -407,7 +408,7 @@ const MESSAGES = {
     'menu.copy': 'Copy',
     'menu.paste': 'Paste',
     'menu.selectAll': 'Select All',
-    'tray.tooltip': 'DeepSeek Harness (dsh {version})',
+    'tray.tooltip': '{app} (dsh {version})',
     'tray.checking': 'Checking for updates…',
     'tray.installing': 'Downloading dsh {version} · {elapsed} elapsed',
     'tray.verifying': 'Verifying the new version starts · {elapsed} elapsed',
@@ -505,6 +506,7 @@ const MESSAGES = {
     'error.updateNoRelease': 'the repository has published no release yet',
     'error.updateNoAsset': 'the release has no update package named {name}',
     'error.updateNoInstaller': 'the release ships no installer for this platform',
+    'error.updateNoRepo': 'this build has no update source configured',
     'error.updateChecksum': 'the update package failed its SHA-256 check and was discarded',
     'error.updateBadBundle': 'the update package contents are not valid and were discarded',
     'error.updateTooLarge': 'the update package exceeds the size limit and was discarded',
@@ -699,7 +701,7 @@ const MESSAGES = {
     'skills.problem.already-installed': 'A skill of that name is already installed',
     'skills.problem.outside-root': 'That location is not inside the skills folder',
 
-    'loading.starting': 'Starting DeepSeek Harness…',
+    'loading.starting': 'Starting {app}…',
     'loading.hint': 'The first launch downloads and installs the dsh runtime, which can take a few minutes',
   },
 }

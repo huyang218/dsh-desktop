@@ -218,6 +218,31 @@ An installer update only downloads the installer and reveals it — replacing a 
 Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*dsh-desktop*' }
 ```
 
+## White-labeling
+
+Everything that names the application comes from `assets/brand.json`:
+
+```json
+{
+  "name": "DeepSeek Harness",
+  "appId": "io.github.huyang218.dsh-desktop",
+  "dataDir": "dsh-desktop",
+  "legacyDataDir": "dsh-shell",
+  "updateRepo": "huyang218/dsh-desktop",
+  "icons": { "mac": "assets/icon.icns", "win": "assets/icon-1024.png" }
+}
+```
+
+Edit it, run the same `dist` script, and the installer, the bundle identifier, the Dock and window name, the tray tooltip, the loading screen, the data directory and the log all follow. `electron-builder.config.cjs` reads the same document, which is why the build half needs no separate configuration.
+
+Two fields decide more than they look like they do.
+
+**`updateRepo`** is where this build takes its updates from. A branded build left pointing at another project's releases hot-updates itself back into that project's name and icons — a few hundred kilobytes that silently undo the rebrand. Omit it and the build takes no updates at all, which is the safe reading of "not configured"; the menu says so rather than failing.
+
+**`dataDir`** is the directory under the platform's app-data root, and giving a brand its own means a branded build and the original can be installed side by side without either seeing the other's profiles, sessions or runtime. It must be a plain directory name; anything with a separator in it is refused rather than sanitised, because this one string decides where every byte the app owns is written. `legacyDataDir` migrates a directory from a previous name and belongs only to a brand that had one — a new brand has no past to adopt, and inheriting someone else's would take over data that is not its own.
+
+The packaged application carries whatever `name` and icons the brand names. See [Trademarks](#trademarks) for what that does not license.
+
 ## Known limitations
 
 - `dsh` is at release-candidate stage. The contract this app depends on is deliberately minimal: `dsh web --port N`, plus HTTP 200 at the root meaning ready. Check those two first when an upstream change breaks something.

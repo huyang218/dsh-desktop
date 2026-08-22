@@ -23,9 +23,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
 import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
+import { BRAND } from './brand.js'
 import { resolveLocations, saveLocations } from './locations.js'
 import {
-  compareVersions, downloadInstaller, fetchLatestRelease, fetchShellManifest, plan, stageShellUpdate,
+  compareVersions, downloadInstaller, fetchLatestRelease, fetchShellManifest, plan, REPO, stageShellUpdate,
 } from './app-update.js'
 import { DEFAULT_CATALOG_URL, loadCatalog } from './market.js'
 import {
@@ -59,7 +60,7 @@ const assets = path.join(here, '..', 'assets')
 // from source, Electron falls back to the package name and the app menu reads
 // "dsh-desktop". Safe to set because the data directory is pinned explicitly
 // on the next line rather than derived from this name.
-app.setName('DeepSeek Harness')
+app.setName(BRAND.name)
 
 const locations = resolveLocations(app.getPath('appData'))
 app.setPath('userData', locations.dataDir)
@@ -67,7 +68,7 @@ app.setPath('userData', locations.dataDir)
 // Windows ties notifications to an application identity, and one that is not
 // set means notifications that never appear — with no error to notice. It
 // also keeps the taskbar from treating each launch as a different app.
-if (process.platform === 'win32') app.setAppUserModelId('io.github.huyang218.dsh-desktop')
+if (process.platform === 'win32') app.setAppUserModelId(BRAND.appId)
 
 // macOS fires this before the app is ready — for a launch by Open With it is
 // the whole reason the app is starting — so it is registered here rather than
@@ -125,7 +126,7 @@ function initPaths() {
   // A migrated directory keeps its old dsh-shell.log beside this one; that
   // history is the user's, so it is left alone rather than renamed or removed.
   paths.logDir = locations.logDir
-  paths.logFile = path.join(locations.logDir, 'dsh-desktop.log')
+  paths.logFile = path.join(locations.logDir, BRAND.logFile)
   paths.settingsFile = path.join(userData, 'settings.json')
   // Where each skill came from. The shell's own note, so it lives with the
   // shell's settings rather than inside the folder the user edits by hand.
@@ -182,7 +183,7 @@ function applyLocale(id) {
   if (state.skillsWindow && !state.skillsWindow.isDestroyed()) state.skillsWindow.reload()
   if (state.window && !state.window.isDestroyed() && !state.port) {
     // Still on the loading page: reload it so its two strings switch too.
-    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
+    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
       .catch(() => {})
   }
 }
@@ -235,7 +236,7 @@ async function chooseLogDir() {
   if (canceled || !chosen || chosen === paths.logDir) return
   saveLocations(locations.pointerFile, { logDir: chosen === locations.dataDir ? null : chosen })
   paths.logDir = chosen
-  paths.logFile = path.join(chosen, 'dsh-desktop.log')
+  paths.logFile = path.join(chosen, BRAND.logFile)
   log(`log directory set to ${chosen}`)
   await dialog.showMessageBox(state.window, {
     message: t('dialog.logDirChanged', { dir: chosen }),
@@ -395,7 +396,7 @@ async function restartServer() {
   state.child = undefined
   if (old) await stopServer(old)
   if (!state.window.isDestroyed()) {
-    await state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
+    await state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
   }
   await launchServer()
 }
@@ -420,7 +421,7 @@ function superviseExit({ code, signal, uptimeMs }) {
   const delayMs = RESTART_BACKOFF_MS[Math.min(attempt, RESTART_BACKOFF_MS.length) - 1]
   log(`auto-restarting in ${delayMs}ms (attempt ${attempt}/${MAX_AUTO_RESTARTS})`)
   if (state.window && !state.window.isDestroyed()) {
-    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` }).catch(() => {})
+    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` }).catch(() => {})
   }
   state.restartTimer = setTimeout(() => {
     state.restartTimer = undefined
@@ -1033,6 +1034,12 @@ function shellVersion() {
  *   startup, where neither is news.
  */
 async function updateApp({ silent = false } = {}) {
+  // A build under a brand that names no repository takes no updates: asking
+  // the original's would offer this app a replacement wearing another name.
+  if (!REPO) {
+    if (!silent) await dialog.showMessageBox(state.window, { message: t('error.updateNoRepo') })
+    return
+  }
   if (state.updating) {
     if (!silent) await dialog.showMessageBox(state.window, { message: t('dialog.updateBusy') })
     return
@@ -1854,7 +1861,7 @@ function paintTray() {
   if (!tray || tray.isDestroyed()) return
   const update = state.update
   if (!update) {
-    tray.setToolTip(t('tray.tooltip', { version: state.runtime?.version ?? '' }))
+    tray.setToolTip(t('tray.tooltip', { app: BRAND.name, version: state.runtime?.version ?? '' }))
     if (process.platform === 'darwin') tray.setTitle('')
     return
   }
@@ -1939,7 +1946,7 @@ async function main() {
     event.preventDefault()
     window.hide()
   })
-  await window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}` })
+  await window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
   try {
     // Packaged builds prefer the app-bundled Node; the system search is the
     // dev-mode path and the fallback for a missing/corrupt bundle.

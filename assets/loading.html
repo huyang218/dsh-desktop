@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>DeepSeek Harness</title>
+<title></title>
 <style>
   html, body { height: 100%; margin: 0; }
   body {
@@ -29,18 +29,23 @@
   // arrives in the query string that loadFile() attaches.
   const STRINGS = {
     'zh-CN': {
-      starting: '正在启动 DeepSeek Harness…',
+      starting: '正在启动 {app}…',
       hint: '首次启动会下载并安装 dsh 运行时,可能需要几分钟',
     },
     en: {
-      starting: 'Starting DeepSeek Harness…',
+      starting: 'Starting {app}…',
       hint: 'The first launch downloads and installs the dsh runtime, which can take a few minutes',
     },
   }
-  const lang = new URLSearchParams(location.search).get('lang')
+  const query = new URLSearchParams(location.search)
+  const lang = query.get('lang')
+  // The brand travels the same way and for the same reason: this page paints
+  // before there is any channel to ask over.
+  const app = query.get('app') || 'DeepSeek Harness'
   const strings = STRINGS[lang] ?? STRINGS.en
   document.documentElement.lang = STRINGS[lang] ? lang : 'en'
-  document.getElementById('starting').textContent = strings.starting
+  document.title = app
+  document.getElementById('starting').textContent = strings.starting.replace('{app}', app)
   document.getElementById('hint').textContent = strings.hint
 </script>
 </body>

@@ -1,0 +1,11 @@
+{
+  "name": "DeepSeek Harness",
+  "appId": "io.github.huyang218.dsh-desktop",
+  "dataDir": "dsh-desktop",
+  "legacyDataDir": "dsh-shell",
+  "updateRepo": "huyang218/dsh-desktop",
+  "icons": {
+    "mac": "assets/icon.icns",
+    "win": "assets/icon-1024.png"
+  }
+}

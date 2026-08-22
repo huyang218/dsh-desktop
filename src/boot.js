@@ -13,6 +13,7 @@
  */
 import { app } from 'electron'
 import path from 'node:path'
+import { BRAND } from './brand.js'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { appendFileSync } from 'node:fs'
 import { resolveLocations } from './locations.js'
@@ -33,7 +34,7 @@ const shellDir = shellDirOf(locations.dataDir)
  */
 function log(line) {
   try {
-    appendFileSync(path.join(locations.logDir, 'dsh-desktop.log'), `[${new Date().toISOString()}] boot: ${line}\n`)
+    appendFileSync(path.join(locations.logDir, BRAND.logFile), `[${new Date().toISOString()}] boot: ${line}\n`)
   } catch { /* logging must never take the app down */ }
 }
 

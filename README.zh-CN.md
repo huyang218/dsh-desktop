@@ -217,6 +217,31 @@ dsh-desktop/
 Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*dsh-desktop*' }
 ```
 
+## 品牌封装
+
+给应用命名的所有东西都来自 `assets/brand.json`:
+
+```json
+{
+  "name": "DeepSeek Harness",
+  "appId": "io.github.huyang218.dsh-desktop",
+  "dataDir": "dsh-desktop",
+  "legacyDataDir": "dsh-shell",
+  "updateRepo": "huyang218/dsh-desktop",
+  "icons": { "mac": "assets/icon.icns", "win": "assets/icon-1024.png" }
+}
+```
+
+改这一个文件,再跑同样的 `dist` 脚本,安装包、Bundle 标识符、程序坞与窗口名称、托盘提示、启动画面、数据目录与日志全都跟着走。`electron-builder.config.cjs` 读的是同一份文档,所以构建那一半不需要另一套配置。
+
+有两个字段的分量比看上去重。
+
+**`updateRepo`** 是这个构建的更新来源。品牌版若仍指向别人的 Release,第一次热更新就会把自己变回那个项目的名字和图标——几百 KB 的包悄悄把改名撤销。不填则完全不检查更新,这是「未配置」唯一安全的读法;菜单里会如实说明,而不是报错。
+
+**`dataDir`** 是平台应用数据根目录下的目录名。给品牌一个自己的,品牌版与原版才能并存安装,彼此看不到对方的配置、会话与运行时。它必须是一个纯目录名,带路径分隔符的值会被直接拒绝而不是「清洗」成相近的东西——这一个字符串决定了应用写下的每一个字节落在哪里。`legacyDataDir` 用于迁移改名前的旧目录,只属于确实有过旧名字的品牌;新品牌没有历史可迁,继承别人的会把不属于它的数据接管过来。
+
+打包出的应用会带上品牌指定的名称与图标。这不构成任何授权,见[商标](#商标)。
+
 ## 已知边界
 
 - `dsh` 处于 rc 阶段。本应用依赖的契约刻意最小化:`dsh web --port N`,以及根路径返回 HTTP 200 即视为就绪。上游变更导致异常时,优先检查这两点。
