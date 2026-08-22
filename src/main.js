@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
 import { getLocale, LOCALES, messages, resolveLocale, setLocale, t } from './i18n.js'
 import { BRAND } from './brand.js'
+import { cpuPercent, sample as sampleUsage } from './metrics.js'
 import { resolveLocations, saveLocations } from './locations.js'
 import {
   compareVersions, downloadInstaller, fetchLatestRelease, fetchShellManifest, plan, REPO, stageShellUpdate,
@@ -181,6 +182,7 @@ function applyLocale(id) {
   for (const win of pluginWindows()) win.reload()
   if (state.settingsWindow && !state.settingsWindow.isDestroyed()) state.settingsWindow.reload()
   if (state.skillsWindow && !state.skillsWindow.isDestroyed()) state.skillsWindow.reload()
+  if (state.hud && !state.hud.isDestroyed()) state.hud.reload()
   if (state.window && !state.window.isDestroyed() && !state.port) {
     // Still on the loading page: reload it so its two strings switch too.
     state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
@@ -1669,6 +1671,112 @@ function registerSkillIpc() {
   })
 }
 
+// ── Performance badge ────────────────────────────────────────────────────────
+// A small always-on-top window showing what the harness is costing right now.
+// It samples only while it is open: the reading comes from spawning `ps`, and
+// a badge nobody has asked for has no business doing that once a second
+// forever.
+
+/** How often to read. Windows pays hundreds of milliseconds per sample. */
+const HUD_INTERVAL_MS = process.platform === 'win32' ? 2000 : 1000
+const HUD_SIZE = { width: 232, height: 96 }
+
+function hudOpen() {
+  return Boolean(state.hud && !state.hud.isDestroyed())
+}
+
+/**
+ * Reads once and sends the result to the badge.
+ *
+ * The previous sample is kept here rather than in the window so that closing
+ * and reopening does not inherit a rate computed across the gap, which would
+ * be an average over a minute the user was not watching.
+ */
+async function sampleForHud() {
+  if (!hudOpen()) return
+  const child = state.child
+  const reading = child?.pid === undefined
+    ? undefined
+    : await sampleUsage({ pid: child.pid, pgid: child.pid })
+  const previous = state.hudPrevious
+  state.hudPrevious = reading
+  if (!hudOpen()) return
+  state.hud.webContents.send('hud:sample', reading === undefined
+    ? { running: false }
+    : {
+      running: true,
+      cpu: cpuPercent(previous, reading),
+      rssBytes: reading.rssBytes,
+      threads: reading.threads,
+      processes: reading.processes,
+    })
+}
+
+function openHud() {
+  if (hudOpen()) {
+    state.hud.show()
+    return
+  }
+  const saved = visibleBounds(readSettings().hudBounds, screen.getAllDisplays().map(d => d.workArea))
+  const win = new BrowserWindow({
+    ...HUD_SIZE,
+    ...saved ? { x: saved.x, y: saved.y } : {},
+    // A badge, not a window: no frame to take up half of it, no entry in the
+    // task switcher, and above whatever the user is actually working in —
+    // which is the only position from which it is worth anything.
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    webPreferences: { preload: path.join(here, 'hud-preload.cjs') },
+  })
+  // Above full-screen windows too, and on every desktop: a badge that vanished
+  // when the user switched space would be missing whenever they were working.
+  win.setAlwaysOnTop(true, 'floating')
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  if (process.platform !== 'darwin') win.removeMenu()
+  win.loadFile(path.join(assets, 'hud.html'))
+
+  const remember = () => {
+    if (!win.isDestroyed()) writeSettings({ hudBounds: win.getBounds() })
+  }
+  win.on('moved', remember)
+  win.on('closed', () => {
+    state.hud = undefined
+    state.hudPrevious = undefined
+    clearInterval(state.hudTimer)
+    state.hudTimer = undefined
+    buildMenu()
+    refreshTrayMenu()
+  })
+  state.hud = win
+  state.hudPrevious = undefined
+  // One reading immediately so the badge is not blank while it waits, and
+  // then on the interval; the first shows memory, the second a rate.
+  sampleForHud().catch(() => {})
+  state.hudTimer = setInterval(() => { sampleForHud().catch(() => {}) }, HUD_INTERVAL_MS)
+  buildMenu()
+  refreshTrayMenu()
+}
+
+function closeHud() {
+  if (hudOpen()) state.hud.close()
+}
+
+function toggleHud() {
+  const open = hudOpen()
+  if (open) closeHud()
+  else openHud()
+  // Remembered so it comes back with the app: a badge somebody chose to have
+  // on screen is a preference, not a one-off.
+  writeSettings({ hudVisible: !open })
+}
+
 /** Shared between the application menu and the tray context menu. */
 function skillItems() {
   return [{ label: t('menu.skillManage'), click: openSkillsWindow }]
@@ -1726,6 +1834,10 @@ function actionItems() {
         // Checkmarks in the label rather than `type: 'checkbox'`, for the
         // reason spelled out in languageItems(): Electron fires a checked
         // item's handler while it synchronises state as the menu opens.
+        {
+          label: `${hudOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.hud')}`,
+          click: toggleHud,
+        },
         {
           label: `${opensAtLogin() ? '\u2713' : '\u2007\u2007'} ${t('menu.openAtLogin')}`,
           click: () => { setOpensAtLogin(!opensAtLogin()); buildMenu(); refreshTrayMenu() },
@@ -1914,6 +2026,7 @@ async function main() {
   if (locations.logDir !== locations.dataDir) log(`log directory: ${locations.logDir}`)
   registerPluginIpc()
   registerSkillIpc()
+  ipcMain.on('hud:close', () => closeHud())
   registerSettingsIpc()
   registerFileHandoff()
   // Before the first child is spawned and before anything is fetched: the
@@ -1989,6 +2102,11 @@ async function main() {
   // thing they did not come here for. It says nothing unless there is
   // something new, and nothing at all when the network is unreachable.
   setTimeout(() => { updateApp({ silent: true }).catch(error => log(`silent update check: ${error?.message ?? error}`)) }, 30_000)
+
+  // The badge comes back if it was on screen when the app last closed. After
+  // the window, not with it: it reads the server, and until the server is up
+  // there is nothing for it to say.
+  if (readSettings().hudVisible === true) openHud()
 }
 
 process.on('uncaughtException', reason => crash('uncaught exception', reason))
@@ -2034,6 +2152,11 @@ if (!locked) {
     state.quitting = true
     clearTimeout(state.restartTimer)
     state.restartTimer = undefined
+    // Before anything waits on the server: the badge samples it, and an
+    // always-on-top window outliving the app it reports on looks like a crash.
+    clearInterval(state.hudTimer)
+    state.hudTimer = undefined
+    if (hudOpen()) state.hud.destroy()
     if (state.child) {
       event.preventDefault()
       log('stopping dsh server')
