@@ -9,14 +9,70 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { childEnv } from './toolchain.js'
 import { dshBinPath } from './runtime.js'
 
-/** Asks the OS for a free TCP port. @returns {Promise<number>} */
-export async function getFreePort() {
+/** How long to wait for a port we are about to reuse, and how often. */
+const PORT_ATTEMPTS = 6
+const PORT_RETRY_MS = 250
+
+/**
+ * A port for the server, preferring the one it had last time.
+ *
+ * The port is part of the page's origin, and the browser storage the dsh web
+ * UI keeps — which workspace is open, which session is current, how the
+ * sidebar is arranged — is partitioned by origin. A fresh port every launch
+ * is a fresh origin every launch, so all of it is orphaned and the UI opens
+ * as if it had never been used. Measured on one install: forty-one abandoned
+ * origins, each holding a `workspace.view.v5` and a `dsh.sessions.current`
+ * nobody would ever read again.
+ *
+ * So the last port is offered back, and taken only if it is genuinely free —
+ * the check is the same bind that would otherwise pick a random one, so a
+ * port something else has claimed since costs one failed bind and falls
+ * through. Nothing is pinned: this is a preference, not a reservation, and
+ * the app still starts on a machine where that port is now a database.
+ *
+ * @param {number} [preferred] the port from last time, if there was one
+ * @returns {Promise<number>}
+ */
+export async function getFreePort(preferred) {
+  if (Number.isInteger(preferred) && preferred > 1024 && preferred < 65536) {
+    // Retried briefly rather than tried once. The launch that most needs the
+    // old port is the one after an update, and that is a relaunch: the new
+    // process can reach here while the server the old one was told to stop is
+    // still letting go. Waiting a moment for a port we ourselves just released
+    // is the difference between the update keeping the user's open workspace
+    // and quietly dropping it.
+    for (let attempt = 0; attempt < PORT_ATTEMPTS; attempt += 1) {
+      const held = await bind(preferred).catch(() => undefined)
+      if (held !== undefined) return held
+      await sleep(PORT_RETRY_MS)
+    }
+  }
+  return bind(0)
+}
+
+/**
+ * Binds a port to prove it is free, then lets it go.
+ *
+ * There is a race here by construction — something else can take the port
+ * between the close and the server's own bind — and it is the same race the
+ * random-port version has always had. dsh failing to bind is a start failure
+ * the shell already handles by offering a retry.
+ *
+ * @param {number} port 0 for any
+ * @returns {Promise<number>}
+ */
+async function bind(port) {
   const srv = net.createServer()
-  srv.listen(0, '127.0.0.1')
-  await once(srv, 'listening')
-  const { port } = srv.address()
+  srv.listen(port, '127.0.0.1')
+  try {
+    await once(srv, 'listening')
+  } catch (error) {
+    srv.close()
+    throw error
+  }
+  const { port: bound } = srv.address()
   await new Promise(resolve => srv.close(resolve))
-  return port
+  return bound
 }
 
 /**
