@@ -950,6 +950,30 @@ async function testProxy(setting) {
   return results
 }
 
+/**
+ * What makes a manager window a manager window.
+ *
+ * The plugin manager, the market, the skills manager and the settings are
+ * not places to work alongside the chat — they change what the chat is
+ * running on. Left as siblings they could be buried under the window they
+ * were opened from, and a half-finished install could be left behind a
+ * conversation and forgotten. Owned by the main window and modal, they stay
+ * in front of it and hold it until they are closed.
+ *
+ * Without a main window there is nothing to be modal to, and a modal window
+ * with no parent is just a window — so the pairing is returned together or
+ * not at all.
+ *
+ * A hidden main window counts as no main window. This app is tray-resident
+ * and can start without one at all, and opening the plugin manager from the
+ * tray then would hold a window nobody can see and offer no way to find out
+ * why the app stopped responding to it.
+ */
+function ownedByMainWindow() {
+  const parent = state.window
+  return parent && !parent.isDestroyed() && parent.isVisible() ? { parent, modal: true } : {}
+}
+
 function openSettingsWindow() {
   if (state.settingsWindow && !state.settingsWindow.isDestroyed()) {
     state.settingsWindow.show()
@@ -961,6 +985,7 @@ function openSettingsWindow() {
     height: 680,
     title: t('window.settings'),
     autoHideMenuBar: true,
+    ...ownedByMainWindow(),
     webPreferences: { preload: path.join(here, 'settings-preload.cjs') },
   })
   if (process.platform !== 'darwin') win.removeMenu()
@@ -1313,6 +1338,7 @@ function openPluginWindow(mode) {
     width: spec.width,
     height: spec.height,
     title: t(spec.title),
+    ...ownedByMainWindow(),
     // Windows and Linux draw the application menu inside every window, and
     // these windows are not the application: they have their own controls and
     // a menu bar over them is a second, irrelevant one. macOS keeps its menu
@@ -1573,6 +1599,7 @@ function openSkillsWindow() {
     height: 640,
     title: t('window.skills'),
     autoHideMenuBar: true,
+    ...ownedByMainWindow(),
     webPreferences: { preload: path.join(here, 'skills-preload.cjs') },
   })
   if (process.platform !== 'darwin') win.removeMenu()
