@@ -6,7 +6,7 @@
 <style>
   /* The window is transparent and frameless; this card is the whole of it,
      inset far enough that its shadow has somewhere to fall. */
-  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  html, body { box-sizing: border-box; margin: 0; height: 100%; background: transparent; overflow: hidden; }
   body {
     display: flex; padding: 8px;
     font: 12px/1.35 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -76,14 +76,14 @@
   /* ── Compact: one row, no labels. The unit carries the meaning — nobody
      reads "MB" and wonders which number it belongs to — so the labels go and
      the badge loses half its height. ── */
-  .card.compact { padding: 8px 11px; }
+  .card.compact { padding: 5px 11px; }
   .card.compact .stats { flex: 1; grid-template-columns: none; grid-auto-flow: column; gap: 13px; align-items: center; }
   .card.compact .value { font-size: 14px; }
 
   /* ── Assistant: the status is the point and the numbers are the footnote,
      for somebody who keeps it on screen to know what the harness is doing
      rather than to watch a memory figure. ── */
-  .card.assistant { gap: 5px; padding: 10px 12px; }
+  .card.assistant { gap: 5px; padding: 8px 12px; }
   .card.assistant .title { font-size: 13px; font-weight: 600; color: #e9e9ef; }
   .card.assistant .dot { width: 7px; height: 7px; }
   .card.assistant .stats { display: flex; align-items: baseline; gap: 0; grid-template-columns: none; }
@@ -97,48 +97,90 @@
   .card.assistant .value .unit { font-size: 10px; }
 
   /* ── The character layouts ───────────────────────────────────────────────
-     Drawn here rather than shipped as images: they are a few hundred bytes of
-     path data, they stay sharp on every display, and their expression is a
-     class away — which is the point of having a face at all. It reads the
-     state the badge already knows, so the character is showing something
-     rather than decorating something. ── */
+     Each mascot has five authored four-frame loops, so the load is visible in
+     its pose instead of coming from a generic CSS shake pasted over one face. */
   .card.pup, .card.capybara, .card.anime {
-    flex-direction: row; align-items: center; gap: 10px; padding: 9px 12px;
-    position: relative;
+    flex-direction: row; align-items: center; gap: 11px; padding: 10px 13px;
+    position: relative; isolation: isolate;
   }
   .card.pup .close, .card.capybara .close, .card.anime .close {
     position: absolute; top: 3px; right: 5px; opacity: 0; transition: opacity .12s; font-size: 11px;
   }
   .card.pup:hover .close, .card.capybara:hover .close, .card.anime:hover .close { opacity: 1; }
-  .char { display: none; flex: none; width: 40px; height: 40px; overflow: visible; }
+  .char {
+    display: none; flex: none; width: 44px; height: 44px; overflow: visible;
+    position: relative; z-index: 1;
+  }
   /* A supplied picture replaces the drawing entirely; it is given the same
      box and told to fit inside it, so a square or a tall one both land in the
      same place and the text beside them does not move. */
   .char.photo { object-fit: contain; }
-  .card.pup .char.photo, .card.capybara .char.photo, .card.anime .char.photo { display: block; }
-  .card.pup .char.photo ~ .char, .card.capybara .char.photo ~ .char, .card.anime .char.photo ~ .char { display: none; }
-  .card.pup .char.pup, .card.capybara .char.capybara, .card.anime .char.anime { display: block; }
-  /* Working gets a small bob — the badge is glanced at, and movement is the
-     one thing a glance always catches. */
-  .card.work .char { animation: bob 1.6s ease-in-out infinite; }
+  /* `:not([hidden])` because this rule sets `display`, and a bare
+     `display: block` beats the `display: none` the hidden attribute carries —
+     which left an empty 44-point box beside the character whenever nobody had
+     supplied a picture of their own. */
+  .card.pup .char.photo:not([hidden]),
+  .card.capybara .char.photo:not([hidden]),
+  .card.anime .char.photo:not([hidden]) { display: block; }
+  .card.pup .char.photo:not([hidden]) ~ .char,
+  .card.capybara .char.photo:not([hidden]) ~ .char,
+  .card.anime .char.photo:not([hidden]) ~ .char { display: none; }
+  .card.pup .char.pup-duo, .card.capybara .char.capybara, .card.anime .char.anime { display: block; }
+  /* Motion has meaning: breathing, working, hurrying, overloaded, resting.
+     The increasingly short cadence lets the load read before the numbers do. */
+  .card.load-idle .char { animation: breathe 3.2s ease-in-out infinite; }
+  .card.load-active .char { animation: bob 1.45s ease-in-out infinite; }
+  .card.load-busy .char { animation: hustle .72s ease-in-out infinite; }
+  .card.load-hot .char { animation: shake .34s linear infinite; }
+  .card.load-stopped .char { animation: none; filter: saturate(.55); opacity: .78; }
+  /* Authored sprite loops must not receive a second generic CSS animation. */
+  .card.pup .char, .card.capybara .char, .card.anime .char { animation: none; }
+  @keyframes breathe { 50% { transform: translateY(-1px) scale(1.015); } }
   @keyframes bob { 50% { transform: translateY(-2px); } }
-  .char .stroke { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-  /* One eye set per state, and only one drawn at a time. */
-  .char .calm, .char .busy-face, .char .dead { display: none; }
-  .card:not(.work):not(.stopped) .char .calm { display: block; }
-  .card.work .char .busy-face { display: block; }
-  .card.stopped .char .dead { display: block; }
+  @keyframes hustle { 25% { transform: translate(-1px, -2px) rotate(-1deg); } 75% { transform: translate(1px, 0) rotate(1deg); } }
+  @keyframes shake { 25% { transform: translate(-1px, -1px) rotate(-1deg); } 75% { transform: translate(1px, 1px) rotate(1deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .card.load-idle .char, .card.load-active .char, .card.load-busy .char, .card.load-hot .char { animation: none; }
+  }
+  .pup-duo { width: 50px; height: 50px; margin-left: -2px; margin-right: -1px; }
+  .sprite-mascot { width: 52px; height: 52px; margin-left: -3px; margin-right: -2px; overflow: hidden; }
+  .pup-duo img, .sprite-mascot img { display: block; width: 100%; height: 100%; object-fit: contain; }
 
   .card.pup .body, .card.capybara .body, .card.anime .body {
-    display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1;
+    display: flex; flex-direction: column; gap: 5px; min-width: 0; flex: 1;
+    position: relative; z-index: 1;
   }
   .card.pup header, .card.capybara header, .card.anime header { display: none; }
+  .say { display: none; }
   .card.pup .say, .card.capybara .say, .card.anime .say {
-    font-size: 12px; font-weight: 600; color: #e9e9ef;
+    display: block; font-size: 12px; font-weight: 650;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  .skin-tag {
+    display: none; width: max-content; padding: 1px 6px; border-radius: 999px;
+    font-size: 8px; line-height: 14px; font-weight: 750; letter-spacing: .08em;
+  }
+  .card.pup .skin-tag, .card.capybara .skin-tag, .card.anime .skin-tag { display: block; }
+  .headline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .load-meter { display: none; align-items: end; gap: 1.5px; height: 11px; margin-left: auto; flex: none; }
+  .card.pup .load-meter, .card.capybara .load-meter, .card.anime .load-meter { display: flex; }
+  .load-meter i { display: block; width: 2.5px; border-radius: 2px; background: currentColor; opacity: .18; }
+  .load-meter i:nth-child(1) { height: 4px; }
+  .load-meter i:nth-child(2) { height: 6px; }
+  .load-meter i:nth-child(3) { height: 8px; }
+  .load-meter i:nth-child(4) { height: 11px; }
+  .card.load-idle .load-meter i:nth-child(1),
+  .card.load-active .load-meter i:nth-child(-n+2),
+  .card.load-busy .load-meter i:nth-child(-n+3),
+  .card.load-hot .load-meter i { opacity: .9; }
+  .card.load-stopped .load-meter { opacity: .35; }
   .card.pup .stats, .card.capybara .stats, .card.anime .stats {
     display: flex; align-items: baseline; gap: 0; grid-template-columns: none;
+    /* The numbers grow with the load — CPU is per core, so a saturated
+       machine reads three digits where an idle one reads one — so the row
+       shrinks and clips its own tail rather than pushing the card past the
+       window it lives in. */
+    min-width: 0; overflow: hidden;
   }
   .card.pup .stat, .card.capybara .stat, .card.anime .stat { flex-direction: row; align-items: baseline; }
   .card.pup .label, .card.capybara .label, .card.anime .label { display: none; }
@@ -146,13 +188,110 @@
   .card.capybara .stat:not(:last-child)::after,
   .card.anime .stat:not(:last-child)::after { content: '·'; color: #56565f; margin: 0 6px; }
   .card.pup .value, .card.capybara .value, .card.anime .value {
-    font-size: 11px; font-weight: 500; color: #9a9aa6;
+    font-size: 11px; font-weight: 600;
   }
   .card.pup .value .unit, .card.capybara .value .unit, .card.anime .value .unit { font-size: 9px; }
 
+  /* Line pup: warm sketchbook paper, ink that is deliberately not quite
+     geometrical, and a blue-pencil accent. This is a skin rather than a dark
+     card with a dog pasted onto it. */
+  .card.pup {
+    color: #292b2d;
+    padding: 7px 13px;
+    background:
+      linear-gradient(rgba(91, 137, 181, .08) 1px, transparent 1px) 0 13px / 100% 15px,
+      rgba(255, 252, 241, .97);
+    border: 1.5px solid #35383b;
+    border-radius: 14px 11px 15px 12px;
+    box-shadow: 3px 3px 0 rgba(47, 52, 57, .18), 0 8px 22px rgba(19, 25, 30, .16);
+  }
+  .card.pup::before {
+    content: ''; position: absolute; z-index: 0; left: 6px; top: 6px;
+    width: 9px; height: 9px; border-top: 1.5px solid #4b8fc5; border-left: 1.5px solid #4b8fc5;
+    transform: rotate(-5deg); opacity: .75;
+  }
+  .card.pup::after {
+    content: ''; position: absolute; z-index: 0; right: 12px; bottom: 8px;
+    width: 18px; height: 5px; border-bottom: 1.5px solid rgba(75, 143, 197, .35);
+    border-radius: 50%; transform: rotate(-3deg);
+  }
+  .card.pup .skin-tag { color: #285f89; background: #ddecf5; border: 1px solid #a7c8de; }
+  .card.pup .say { color: #292b2d; }
+  .card.pup .value { color: #50565b; }
+  .card.pup .value .unit { color: #7e858a; }
+  .card.pup .stat:not(:last-child)::after { color: #a8b0b5; }
+  .card.pup .value.busy { color: #c16d20; }
+  .card.pup .close { color: #91989d; }
+  .card.pup .close:hover { color: #292b2d; }
+  .card.pup.load-hot { border-color: #c86b4b; box-shadow: 3px 3px 0 rgba(200, 107, 75, .2), 0 8px 24px rgba(118, 53, 36, .25); }
+
+  /* Capybara Lulu: soft earth colours, a pond line and a leafy highlight.
+     Rounded forms mirror the animal instead of borrowing the pup's paper. */
+  .card.capybara {
+    color: #3c3328;
+    background:
+      radial-gradient(circle at 88% 15%, rgba(255, 237, 174, .72) 0 13px, transparent 14px),
+      linear-gradient(165deg, rgba(248, 237, 207, .98), rgba(221, 232, 190, .97));
+    border: 1px solid rgba(92, 109, 66, .6);
+    border-radius: 22px 17px 22px 18px;
+    box-shadow: 0 8px 24px rgba(63, 74, 39, .24), inset 0 1px 0 rgba(255, 255, 255, .72);
+  }
+  .card.capybara::before {
+    content: ''; position: absolute; z-index: 0; left: 0; right: 0; bottom: 0; height: 15px;
+    border-radius: 0 0 21px 17px;
+    background:
+      radial-gradient(26px 8px at 24% 0, transparent 47%, rgba(93, 142, 133, .2) 51% 57%, transparent 61%),
+      linear-gradient(180deg, rgba(126, 166, 143, .08), rgba(93, 142, 133, .2));
+  }
+  .card.capybara::after {
+    content: ''; position: absolute; z-index: 0; right: 18px; top: 10px;
+    width: 11px; height: 6px; border-radius: 100% 0 100% 0;
+    background: #7eaa69; transform: rotate(-18deg); opacity: .8;
+  }
+  .card.capybara .skin-tag { color: #5d482f; background: rgba(255, 248, 222, .78); border: 1px solid #bda67c; }
+  .card.capybara .say { color: #3c3328; }
+  .card.capybara .value { color: #685a48; }
+  .card.capybara .value .unit { color: #887862; }
+  .card.capybara .stat:not(:last-child)::after { color: #a89b7b; }
+  .card.capybara .value.busy { color: #b95f35; }
+  .card.capybara .close { color: #92866f; }
+  .card.capybara .close:hover { color: #3c3328; }
+  .card.capybara.load-hot { border-color: #c06d48; box-shadow: 0 8px 26px rgba(139, 76, 49, .3), inset 0 1px 0 rgba(255, 255, 255, .72); }
+
+  /* Anime assistant: translucent candy colour, bright rim and tiny sparkles.
+     The contrast stays high enough that the metrics remain the useful part. */
+  .card.anime {
+    color: #fff;
+    background:
+      radial-gradient(circle at 88% 18%, rgba(255, 255, 255, .65) 0 1.5px, transparent 2px),
+      radial-gradient(circle at 76% 68%, rgba(255, 235, 151, .7) 0 1px, transparent 1.7px),
+      linear-gradient(135deg, rgba(93, 76, 151, .95), rgba(181, 91, 153, .92));
+    border: 1px solid rgba(255, 255, 255, .38);
+    border-radius: 18px;
+    box-shadow: 0 9px 28px rgba(77, 43, 117, .38), inset 0 1px 0 rgba(255, 255, 255, .35);
+    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  }
+  .card.anime::before, .card.anime::after {
+    content: ''; position: absolute; z-index: 0; width: 9px; height: 9px; opacity: .7;
+    background: linear-gradient(90deg, transparent 43%, #ffe89f 44% 56%, transparent 57%),
+      linear-gradient(0deg, transparent 43%, #ffe89f 44% 56%, transparent 57%);
+    transform: rotate(45deg);
+  }
+  .card.anime::before { right: 14px; top: 10px; }
+  .card.anime::after { right: 31px; top: 28px; width: 5px; height: 5px; opacity: .45; }
+  .card.anime .skin-tag { color: #5d3978; background: #f9e5ff; border: 1px solid rgba(255, 255, 255, .78); }
+  .card.anime .say { color: #fff; text-shadow: 0 1px 2px rgba(62, 34, 91, .35); }
+  .card.anime .value { color: rgba(255, 255, 255, .8); }
+  .card.anime .value .unit { color: rgba(255, 255, 255, .58); }
+  .card.anime .stat:not(:last-child)::after { color: rgba(255, 255, 255, .34); }
+  .card.anime .value.busy { color: #ffe18e; }
+  .card.anime .close { color: rgba(255, 255, 255, .52); }
+  .card.anime .close:hover { color: #fff; }
+  .card.anime.load-hot { box-shadow: 0 9px 30px rgba(220, 80, 128, .55), 0 0 0 1px rgba(255, 225, 142, .55) inset; }
+
   /* ── Minimal: the one number worth a glance, and a dot for whether there is
      anything behind it. ── */
-  .card.minimal { padding: 8px 12px; }
+  .card.minimal { padding: 3px 12px; }
   .card.minimal .stats { grid-template-columns: none; }
   .card.minimal .stat:not(:first-child) { display: none; }
   .card.minimal .value { font-size: 20px; }
@@ -160,7 +299,7 @@
 </style>
 </head>
 <body>
-  <div class="card" id="card">
+  <div class="card load-active" id="card">
     <header>
       <span class="dot" id="dot"></span>
       <span class="title" id="title"></span>
@@ -168,76 +307,23 @@
       <button class="close" id="close" title="">✕</button>
     </header>
     <img class="char photo" id="photo" alt="" hidden>
-    <svg class="char pup" viewBox="0 0 40 40" aria-hidden="true">
-      <g class="stroke" stroke="#e9e9ef" stroke-width="2">
-        <path d="M8 14c-1-5 1-7 3-6l3 2"/>
-        <path d="M32 14c1-5-1-7-3-6l-3 2"/>
-        <path d="M20 7c7 0 12 5 12 12s-5 13-12 13S8 27 8 19 13 7 20 7z"/>
-      </g>
-      <g class="calm">
-        <circle cx="15" cy="18" r="1.7" fill="#e9e9ef"/><circle cx="25" cy="18" r="1.7" fill="#e9e9ef"/>
-        <path class="stroke" stroke="#e9e9ef" stroke-width="1.7" d="M17.5 24c1.5 1.6 3.5 1.6 5 0"/>
-      </g>
-      <g class="busy-face">
-        <path class="stroke" stroke="#e9e9ef" stroke-width="1.8" d="M13 19c1.3-1.8 2.7-1.8 4 0M23 19c1.3-1.8 2.7-1.8 4 0"/>
-        <path class="stroke" stroke="#e9e9ef" stroke-width="1.7" d="M17 24c1.6 1.8 3.8 1.8 5.4 0"/>
-        <path class="stroke" stroke="#8fd0ff" stroke-width="1.6" d="M34 20c1.4 1.8 1.4 3.4 0 4-1.4-.6-1.4-2.2 0-4z"/>
-      </g>
-      <g class="dead">
-        <path class="stroke" stroke="#e06a5c" stroke-width="1.8" d="M13.2 16.2l3.4 3.4M16.6 16.2l-3.4 3.4M23.4 16.2l3.4 3.4M26.8 16.2l-3.4 3.4"/>
-        <path class="stroke" stroke="#e06a5c" stroke-width="1.7" d="M17.4 25.4c1.5-1.6 3.6-1.6 5.1 0"/>
-      </g>
-    </svg>
+    <div class="char pup-duo" aria-hidden="true">
+      <img id="pupSprite" src="hud-characters/line-puppy-active.png" alt="">
+    </div>
 
-    <svg class="char capybara" viewBox="0 0 40 40" aria-hidden="true">
-      <g>
-        <ellipse cx="12.5" cy="12" rx="3" ry="2.6" fill="#a98063"/>
-        <ellipse cx="27.5" cy="12" rx="3" ry="2.6" fill="#a98063"/>
-        <path d="M20 9c8 0 13 5 13 11s-5 11-13 11S7 26 7 20 12 9 20 9z" fill="#c39a77"/>
-        <ellipse cx="20" cy="27" rx="7" ry="4.6" fill="#a98063" opacity=".55"/>
-        <path d="M31 10c2-2 5-2 6 0-1 2-4 2.6-6 1.6z" fill="#8fbf6a"/>
-      </g>
-      <g class="calm">
-        <path class="stroke" stroke="#4a3627" stroke-width="1.8" d="M14 19.5h3.4M22.6 19.5H26"/>
-        <path class="stroke" stroke="#4a3627" stroke-width="1.5" d="M18.6 27.4h2.8"/>
-      </g>
-      <g class="busy-face">
-        <circle cx="15.6" cy="19.4" r="1.6" fill="#4a3627"/><circle cx="24.4" cy="19.4" r="1.6" fill="#4a3627"/>
-        <ellipse cx="20" cy="27.4" rx="2.2" ry="1.6" fill="#4a3627"/>
-        <path class="stroke" stroke="#8fd0ff" stroke-width="1.6" d="M34.5 20.5c1.4 1.8 1.4 3.4 0 4-1.4-.6-1.4-2.2 0-4z"/>
-      </g>
-      <g class="dead">
-        <path class="stroke" stroke="#e06a5c" stroke-width="1.7" d="M14 17.8l3.2 3.2M17.2 17.8L14 21M22.8 17.8l3.2 3.2M26 17.8l-3.2 3.2"/>
-        <path class="stroke" stroke="#e06a5c" stroke-width="1.5" d="M18.4 28.4c1-1 2.2-1 3.2 0"/>
-      </g>
-    </svg>
+    <div class="char sprite-mascot capybara" aria-hidden="true">
+      <img id="capybaraSprite" src="hud-characters/capybara-active.png" alt="">
+    </div>
 
-    <svg class="char anime" viewBox="0 0 40 40" aria-hidden="true">
-      <g>
-        <path d="M20 6c8.5 0 13.5 5.5 13.5 13S28 32.5 20 32.5 6.5 26.5 6.5 19 11.5 6 20 6z" fill="#f2e3d5"/>
-        <path d="M20 5.5c7 0 12 3.4 13.2 8.4-2.6-2.6-6.4-1.6-8.8-3.4-1.6 3-6.6 4.2-11.2 4.6-2 .2-3.4 1-4.4 2.2C8.6 10.6 13 5.5 20 5.5z" fill="#5b4a63"/>
-        <circle cx="12.6" cy="24.4" r="2.4" fill="#f0a0a8" opacity=".65"/>
-        <circle cx="27.4" cy="24.4" r="2.4" fill="#f0a0a8" opacity=".65"/>
-      </g>
-      <g class="calm">
-        <ellipse cx="14.6" cy="21" rx="2.5" ry="3.1" fill="#3a3550"/>
-        <ellipse cx="25.4" cy="21" rx="2.5" ry="3.1" fill="#3a3550"/>
-        <circle cx="15.5" cy="19.8" r="1" fill="#fff"/><circle cx="26.3" cy="19.8" r="1" fill="#fff"/>
-        <path class="stroke" stroke="#8a6a70" stroke-width="1.4" d="M18.7 27c.9.9 1.7.9 2.6 0"/>
-      </g>
-      <g class="busy-face">
-        <path class="stroke" stroke="#3a3550" stroke-width="2" d="M12.2 21.6c1.5-2.2 3.3-2.2 4.8 0M23 21.6c1.5-2.2 3.3-2.2 4.8 0"/>
-        <ellipse cx="20" cy="27" rx="2" ry="1.7" fill="#c2707a"/>
-        <path class="stroke" stroke="#8fd0ff" stroke-width="1.6" d="M34.5 19c1.4 1.8 1.4 3.4 0 4-1.4-.6-1.4-2.2 0-4z"/>
-      </g>
-      <g class="dead">
-        <path class="stroke" stroke="#8a6a70" stroke-width="1.8" d="M12.4 19l4 4M16.4 19l-4 4M23.6 19l4 4M27.6 19l-4 4"/>
-        <path class="stroke" stroke="#8a6a70" stroke-width="1.5" d="M18.4 28c1-1 2.2-1 3.2 0"/>
-      </g>
-    </svg>
+    <div class="char sprite-mascot anime" aria-hidden="true">
+      <img id="animeSprite" src="hud-characters/anime-active.png" alt="">
+    </div>
 
     <div class="body">
-      <div class="say" id="say"></div>
+      <div class="headline">
+        <span class="skin-tag" id="skinTag"></span><div class="say" id="say"></div>
+        <span class="load-meter" id="loadMeter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      </div>
       <div class="stats">
       <div class="stat"><div class="value" id="cpu">—</div><div class="label" data-i18n="hud.cpu"></div></div>
       <div class="stat"><div class="value" id="mem">—</div><div class="label" data-i18n="hud.memory"></div></div>
@@ -259,6 +345,7 @@
   if (['compact', 'minimal', 'assistant', 'pup', 'capybara', 'anime'].includes(style)) {
     $('card').classList.add(style)
   }
+  const characterStyle = ['pup', 'capybara', 'anime'].includes(style)
   // A character the user supplied, handed over as a path the same way the
   // language and the layout are: this page loads before any channel exists.
   // Up to three pictures the user supplied — idle, busy, down — handed over
@@ -280,10 +367,10 @@
   }
 
   /** Shows the face for a state, when one was supplied for it. */
-  function showFace(kind) {
+  function showFace(load) {
     if (!faces.idle) return
-    const wanted = kind === 'stopped' ? (faces.down ?? faces.idle)
-      : kind === 'work' ? (faces.busy ?? faces.idle)
+    const wanted = load === 'stopped' ? (faces.down ?? faces.idle)
+      : ['active', 'busy', 'hot'].includes(load) ? (faces.busy ?? faces.idle)
         : faces.idle
     // Assigning the same src would restart an animated one on every tick.
     if (photo.src !== wanted) photo.src = wanted
@@ -311,28 +398,46 @@
     return [Math.round(value / 1024 / 1024).toString(), 'MB']
   }
 
-  /** The status line, and the dot that colours it. */
-  function showStatus(status) {
+  const loadClasses = ['idle', 'active', 'busy', 'hot', 'stopped'].map(load => `load-${load}`)
+  const spriteFormat = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'png' : 'gif'
+  const spritePrefixes = { pup: 'line-puppy', capybara: 'capybara', anime: 'anime' }
+  const spriteIds = { pup: 'pupSprite', capybara: 'capybaraSprite', anime: 'animeSprite' }
+  const mascotSprites = Object.fromEntries(loadClasses.map(name => {
+    const load = name.slice(5)
+    return [load, `hud-characters/${spritePrefixes[style]}-${load}.${spriteFormat}`]
+  }))
+
+  /** The status line, its load tier, and the dot that colours it. */
+  function showStatus(status, load = 'stopped') {
     const kind = status?.kind ?? 'stopped'
     const detail = status?.detail
     $('title').textContent = detail === undefined
       ? t('hud.status.' + kind)
       : t('hud.status.' + kind).replace('{n}', detail)
-    // Working, resting, or nothing to report — three colours, not eight.
+    // The dot remains deliberately simple; the character and four-bar meter
+    // carry the more precise load tier.
     const tone = kind === 'stopped' ? ' stop'
       : ['ready'].includes(kind) ? ''
         : ' work'
     $('dot').className = 'dot' + tone
-    // The same three states drive the character's face, so it is reading the
-    // badge rather than being animated on its own schedule.
-    $('card').classList.toggle('work', tone === ' work')
-    $('card').classList.toggle('stopped', kind === 'stopped')
-    showFace(kind === 'stopped' ? 'stopped' : tone === ' work' ? 'work' : 'idle')
+    $('card').classList.remove(...loadClasses)
+    $('card').classList.add(`load-${load}`)
+    if (characterStyle) {
+      const sprite = $(spriteIds[style])
+      const wanted = mascotSprites[load] ?? mascotSprites.stopped
+      if (sprite && !sprite.src.endsWith(wanted)) sprite.src = wanted
+    }
+    showFace(load)
+    if (characterStyle) {
+      $('skinTag').textContent = t(`hud.load.${load}`)
+      $('skinTag').title = t(`hud.style.${style}`)
+      $('loadMeter').title = t(`hud.load.${load}`)
+    }
     $('say').textContent = $('title').textContent
   }
 
   dshHud.onSample(reading => {
-    showStatus(reading.status)
+    showStatus(reading.status, reading.load)
     if (!reading.running) {
       for (const id of ['cpu', 'mem', 'threads', 'procs']) put(id, '—')
       $('cpu').classList.remove('busy')
@@ -342,7 +447,7 @@
     // after opening has a memory reading but cannot have a rate yet.
     if (reading.cpu === undefined || reading.cpu === null) put('cpu', '—')
     else put('cpu', reading.cpu < 10 ? reading.cpu.toFixed(1) : Math.round(reading.cpu).toString(), '%')
-    $('cpu').classList.toggle('busy', (reading.cpu ?? 0) >= 80)
+    $('cpu').classList.toggle('busy', ['busy', 'hot'].includes(reading.load))
     put('mem', ...bytes(reading.rssBytes))
     put('threads', String(reading.threads || '—'))
     put('procs', String(reading.processes || '—'))

@@ -1744,9 +1744,12 @@ const HUD_STYLES = {
   // The character layouts: a drawn face, the state in words beside it, and
   // the numbers demoted to a footnote. Same width for the three so switching
   // between them does not move the badge.
-  pup: { width: 244, height: 74 },
-  capybara: { width: 244, height: 74 },
-  anime: { width: 244, height: 74 },
+  // Wide enough for the worst case rather than the common one: a badge that
+  // clipped exactly when the machine was saturated would be useless at the
+  // only moment somebody looks at it.
+  pup: { width: 288, height: 82 },
+  capybara: { width: 288, height: 82 },
+  anime: { width: 288, height: 82 },
 }
 const DEFAULT_HUD_STYLE = 'standard'
 
@@ -1865,8 +1868,28 @@ function hudStatus() {
   return { kind: 'ready' }
 }
 
-/** Above this the badge calls it busy rather than ready. */
-const HUD_BUSY_PERCENT = 25
+/**
+ * CPU tiers for the character state. Thread count is displayed but is not a
+ * load signal: a runtime can own many sleeping threads and still be idle.
+ */
+const HUD_ACTIVE_PERCENT = 10
+const HUD_BUSY_PERCENT = 35
+const HUD_HOT_PERCENT = 70
+
+/**
+ * Converts first-hand process and shell state into the five states the badge
+ * can honestly show. This is runtime load, not a claim that the shell can see
+ * an agent's private reasoning or queue.
+ */
+function hudLoad(running, cpu, status) {
+  if (!running || status.kind === 'stopped') return 'stopped'
+  if (['plugin', 'skill', 'updating', 'restarting'].includes(status.kind)) return 'busy'
+  if (status.kind === 'starting' || cpu === undefined || cpu === null) return 'active'
+  if (cpu >= HUD_HOT_PERCENT) return 'hot'
+  if (cpu >= HUD_BUSY_PERCENT) return 'busy'
+  if (cpu >= HUD_ACTIVE_PERCENT) return 'active'
+  return 'idle'
+}
 
 /**
  * Reads once and sends the result to the badge.
@@ -1886,17 +1909,19 @@ async function sampleForHud() {
   if (!hudOpen()) return
   const cpu = cpuPercent(previous, reading)
   const status = hudStatus()
+  const load = hudLoad(reading !== undefined, cpu, status)
   state.hud.webContents.send('hud:sample', reading === undefined
-    ? { running: false, status }
+    ? { running: false, status, load }
     : {
       running: true,
       cpu,
       rssBytes: reading.rssBytes,
       threads: reading.threads,
       processes: reading.processes,
-      // Busy is a reading, not a state the shell keeps: it is true exactly
-      // when the thing is working hard, whoever asked it to.
-      status: status.kind === 'ready' && (cpu ?? 0) >= HUD_BUSY_PERCENT ? { kind: 'busy' } : status,
+      load,
+      // The words stay calm while the pose carries the severity. Busy is a
+      // reading, not a durable shell state, and both upper tiers are work.
+      status: status.kind === 'ready' && ['busy', 'hot'].includes(load) ? { kind: 'busy' } : status,
     })
 }
 
