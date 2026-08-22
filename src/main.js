@@ -1880,7 +1880,19 @@ function openHud() {
   // did not ask. What made it look like it "fell behind" was not the level
   // but that nothing brought it forward again — see raiseHud().
   win.setAlwaysOnTop(true, 'floating')
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // Deliberately without `visibleOnFullScreen`. It is the only way to float
+  // over another application's full-screen space, and macOS grants that by
+  // moving the *application* to the accessory activation policy — which is
+  // defined as not appearing in the Dock or the app switcher. The whole app
+  // vanishes from both, and closing the badge does not bring it back.
+  //
+  // Measured rather than reasoned: the Dock icon survives the window flags
+  // and survives setAlwaysOnTop at every level, and goes at exactly this
+  // call — plain `setVisibleOnAllWorkspaces(true)` leaves it alone. Following
+  // the user across spaces is kept because it costs nothing; covering someone
+  // else's full-screen window is given up, because a badge is not worth
+  // making the application it belongs to unreachable.
+  win.setVisibleOnAllWorkspaces(true)
   if (process.platform !== 'darwin') win.removeMenu()
   win.loadFile(path.join(assets, 'hud.html'), { search: `style=${style}` })
 
@@ -1920,7 +1932,7 @@ function openHud() {
 function raiseHud() {
   if (!hudOpen()) return
   state.hud.setAlwaysOnTop(true, 'floating')
-  state.hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  state.hud.setVisibleOnAllWorkspaces(true)
   // showInactive rather than show: bringing the badge forward must not take
   // the keyboard away from the window the user just clicked into.
   if (!state.hud.isVisible()) state.hud.showInactive()
