@@ -134,6 +134,9 @@ function initPaths() {
   paths.skillOrigins = path.join(userData, 'skill-origins.json')
   // The badge's own picture, copied here so it survives the source moving.
   paths.hudDir = path.join(userData, 'hud')
+  // The web UI's own storage, kept so it survives the port — and therefore
+  // the origin — changing under it. See src/chat-preload.cjs.
+  paths.uiStateFile = path.join(userData, 'ui-state.json')
   mkdirSync(paths.dshHome, { recursive: true })
 }
 
@@ -1634,6 +1637,36 @@ async function withSkillWork(work) {
   }
 }
 
+/**
+ * The page's storage, held for the next origin.
+ *
+ * Written whole and read whole, with nothing here understanding a single key
+ * of it: this is a courier, and the moment it started interpreting the cargo
+ * it would start breaking when the cargo changed.
+ */
+function registerUiStateIpc() {
+  ipcMain.on('ui-state:load', event => {
+    try {
+      event.returnValue = JSON.parse(readFileSync(paths.uiStateFile, 'utf8'))
+    } catch {
+      // No snapshot yet, or one that will not parse. Either way the page keeps
+      // whatever it has, which is the safe direction to fail in.
+      event.returnValue = undefined
+    }
+  })
+
+  ipcMain.on('ui-state:save', (_event, payload) => {
+    if (!payload || typeof payload.origin !== 'string' || typeof payload.data !== 'object') return
+    try {
+      writeFileSync(paths.uiStateFile, `${JSON.stringify({
+        origin: payload.origin, data: payload.data, savedAt: new Date().toISOString(),
+      }, null, 2)}\n`)
+    } catch (error) {
+      log(`could not save the interface state: ${error?.message ?? error}`)
+    }
+  })
+}
+
 function registerSkillIpc() {
   ipcMain.handle('skills:list', () => listSkills(skillRoots()))
 
@@ -2389,6 +2422,7 @@ async function main() {
   if (locations.logDir !== locations.dataDir) log(`log directory: ${locations.logDir}`)
   registerPluginIpc()
   registerSkillIpc()
+  registerUiStateIpc()
   ipcMain.on('hud:close', () => closeHud())
   registerSettingsIpc()
   registerFileHandoff()
