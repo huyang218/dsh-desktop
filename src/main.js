@@ -1729,6 +1729,8 @@ function registerSkillIpc() {
 
 /** How often to read. Windows pays hundreds of milliseconds per sample. */
 const HUD_INTERVAL_MS = process.platform === 'win32' ? 2000 : 1000
+/** Below this two readings are the clock's resolution, not the process's work. */
+const MIN_HUD_SAMPLE_MS = 400
 /**
  * The layouts the badge comes in, and what each needs to hold its contents.
  *
@@ -1905,9 +1907,19 @@ async function sampleForHud() {
     ? undefined
     : await sampleUsage({ pid: child.pid, pgid: child.pid })
   const previous = state.hudPrevious
-  state.hudPrevious = reading
+  // A reading that arrives too soon after the last one — the extra sample a
+  // style change triggers, or a reopen — cannot produce an honest rate, so it
+  // does not become the new baseline either. The next tick then measures
+  // across the full interval instead of inheriting a truncated one.
+  const tooSoon = previous !== undefined && reading !== undefined
+    && reading.at - previous.at < MIN_HUD_SAMPLE_MS
+  if (!tooSoon) state.hudPrevious = reading
   if (!hudOpen()) return
-  const cpu = cpuPercent(previous, reading)
+  // Keeping the last good rate rather than showing nothing: a badge that
+  // blanked its own number every time the user changed its shape would look
+  // broken by the act of using it.
+  const cpu = tooSoon ? state.hudCpu : cpuPercent(previous, reading)
+  state.hudCpu = cpu
   const status = hudStatus()
   const load = hudLoad(reading !== undefined, cpu, status)
   state.hud.webContents.send('hud:sample', reading === undefined
@@ -1992,6 +2004,7 @@ function openHud() {
   win.on('closed', () => {
     state.hud = undefined
     state.hudPrevious = undefined
+    state.hudCpu = undefined
     clearInterval(state.hudTimer)
     state.hudTimer = undefined
     buildMenu()

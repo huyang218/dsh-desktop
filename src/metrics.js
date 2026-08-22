@@ -23,6 +23,13 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 /** A sample that takes longer than this is not worth the one after it. */
 const SAMPLE_TIMEOUT_MS = 4000
+/**
+ * The shortest span a rate may be computed over.
+ *
+ * At 400ms one tick of `ps`'s hundredth-second resolution is 2.5%, which is
+ * noise a reader will not notice; at 50ms it is 20%, which is a lie.
+ */
+const MIN_SAMPLE_SECONDS = 0.4
 
 /**
  * @typedef {object} Sample
@@ -187,7 +194,12 @@ $threads = ($procs | ForEach-Object { $_.Threads.Count } | Measure-Object -Sum).
 export function cpuPercent(previous, current) {
   if (previous === undefined || current === undefined) return undefined
   const elapsed = (current.at - previous.at) / 1000
-  if (!(elapsed > 0)) return undefined
+  // A floor, not just a positive check. `ps` reports CPU time in hundredths
+  // of a second, so over a span of 50ms a single tick of it computes as 20%
+  // and four ticks as 80% — a reading that says "saturated" about a process
+  // that did almost nothing. Two samples closer together than this measure
+  // the clock's resolution rather than the process, so they measure nothing.
+  if (elapsed < MIN_SAMPLE_SECONDS) return undefined
   const used = current.cpuSeconds - previous.cpuSeconds
   // A restart resets the counter; a negative delta means the thing being
   // measured is not the thing that was measured, so report nothing rather
