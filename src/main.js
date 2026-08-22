@@ -1710,7 +1710,25 @@ function registerSkillIpc() {
 
 /** How often to read. Windows pays hundreds of milliseconds per sample. */
 const HUD_INTERVAL_MS = process.platform === 'win32' ? 2000 : 1000
-const HUD_SIZE = { width: 232, height: 96 }
+/**
+ * The layouts the badge comes in, and what each needs to hold its contents.
+ *
+ * A size per style rather than one window that reflows: the badge is docked
+ * in a corner, and a card that kept a standard window's footprint while
+ * showing one number would be mostly empty space held over the user's work.
+ */
+const HUD_STYLES = {
+  standard: { width: 232, height: 96 },
+  compact: { width: 214, height: 46 },
+  minimal: { width: 112, height: 46 },
+}
+const DEFAULT_HUD_STYLE = 'standard'
+
+/** The chosen layout, or the default when the setting is absent or unknown. */
+function hudStyle() {
+  const saved = readSettings().hudStyle
+  return Object.hasOwn(HUD_STYLES, saved) ? saved : DEFAULT_HUD_STYLE
+}
 /** Clear of the screen edge, and of a menu bar the work area already excludes. */
 const HUD_MARGIN = 16
 
@@ -1725,9 +1743,9 @@ const HUD_MARGIN = 16
  *
  * @param {{x: number, y: number, width: number, height: number}} workArea
  */
-function hudCorner(workArea) {
+function hudCorner(workArea, size) {
   return {
-    x: workArea.x + workArea.width - HUD_SIZE.width - HUD_MARGIN,
+    x: workArea.x + workArea.width - size.width - HUD_MARGIN,
     y: workArea.y + HUD_MARGIN,
   }
 }
@@ -1768,13 +1786,21 @@ function openHud() {
     state.hud.show()
     return
   }
+  const style = hudStyle()
+  const size = HUD_STYLES[style]
   const saved = visibleBounds(readSettings().hudBounds, screen.getAllDisplays().map(d => d.workArea))
   // A saved position that no longer lands on any screen is discarded by
   // visibleBounds, so an unplugged monitor returns the badge to the corner
   // rather than to somewhere it cannot be seen or dragged back from.
-  const where = saved ?? hudCorner(screen.getPrimaryDisplay().workArea)
+  //
+  // Only the position is restored, never the size: the size belongs to the
+  // layout, and a saved rectangle from another one would show this layout in
+  // the last one's footprint.
+  const where = saved
+    ? { x: saved.x + (saved.width ?? size.width) - size.width, y: saved.y }
+    : hudCorner(screen.getPrimaryDisplay().workArea, size)
   const win = new BrowserWindow({
-    ...HUD_SIZE,
+    ...size,
     x: where.x,
     y: where.y,
     // A badge, not a window: no frame to take up half of it, no entry in the
@@ -1801,7 +1827,7 @@ function openHud() {
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   if (process.platform !== 'darwin') win.removeMenu()
-  win.loadFile(path.join(assets, 'hud.html'))
+  win.loadFile(path.join(assets, 'hud.html'), { search: `style=${style}` })
 
   const remember = () => {
     if (!win.isDestroyed()) writeSettings({ hudBounds: win.getBounds() })
@@ -1848,6 +1874,33 @@ function raiseHud() {
 
 function closeHud() {
   if (hudOpen()) state.hud.close()
+}
+
+/**
+ * Switches layout, in place when the badge is on screen.
+ *
+ * The right edge stays where it was rather than the left. The badge lives in
+ * a corner — the top right by default — and a narrower layout that kept its
+ * left edge would drift away from that corner every time it shrank.
+ *
+ * @param {keyof HUD_STYLES} style
+ */
+function setHudStyle(style) {
+  if (!Object.hasOwn(HUD_STYLES, style)) return
+  writeSettings({ hudStyle: style })
+  if (hudOpen()) {
+    const size = HUD_STYLES[style]
+    const bounds = state.hud.getBounds()
+    state.hud.setBounds({ x: bounds.x + bounds.width - size.width, y: bounds.y, ...size })
+    writeSettings({ hudBounds: state.hud.getBounds() })
+    state.hud.loadFile(path.join(assets, 'hud.html'), { search: `style=${style}` })
+    // The reload throws away the rendered numbers; the reading behind them is
+    // still current, so send it again rather than showing dashes until the
+    // next tick comes round.
+    state.hud.webContents.once('did-finish-load', () => { sampleForHud().catch(() => {}) })
+  }
+  buildMenu()
+  refreshTrayMenu()
 }
 
 function toggleHud() {
@@ -1917,8 +1970,18 @@ function actionItems() {
         // reason spelled out in languageItems(): Electron fires a checked
         // item's handler while it synchronises state as the menu opens.
         {
-          label: `${hudOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.hud')}`,
-          click: toggleHud,
+          label: t('menu.hud'),
+          submenu: [
+            {
+              label: `${hudOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.hudShow')}`,
+              click: toggleHud,
+            },
+            { type: 'separator' },
+            ...Object.keys(HUD_STYLES).map(style => ({
+              label: `${hudStyle() === style ? '\u2713' : '\u2007\u2007'} ${t(`hud.style.${style}`)}`,
+              click: () => setHudStyle(style),
+            })),
+          ],
         },
         {
           label: `${opensAtLogin() ? '\u2713' : '\u2007\u2007'} ${t('menu.openAtLogin')}`,
