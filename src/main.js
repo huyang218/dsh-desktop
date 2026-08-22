@@ -350,6 +350,10 @@ function showWindow() {
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
+  // Waking the app brings its badge with it. This is the funnel for the Dock
+  // icon, the tray's own item and a second launch, so the three arrive at the
+  // same place rather than each remembering separately.
+  raiseHud()
 }
 
 async function launchServer() {
@@ -1760,8 +1764,13 @@ function openHud() {
     alwaysOnTop: true,
     webPreferences: { preload: path.join(here, 'hud-preload.cjs') },
   })
-  // Above full-screen windows too, and on every desktop: a badge that vanished
-  // when the user switched space would be missing whenever they were working.
+  // Above the app's own windows, and on every desktop.
+  //
+  // 'floating' rather than a level that outranks every other application:
+  // the badge belongs to this app and comes forward with it, so pinning it
+  // over whatever else the user is doing would be answering a question they
+  // did not ask. What made it look like it "fell behind" was not the level
+  // but that nothing brought it forward again — see raiseHud().
   win.setAlwaysOnTop(true, 'floating')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   if (process.platform !== 'darwin') win.removeMenu()
@@ -1787,6 +1796,27 @@ function openHud() {
   state.hudTimer = setInterval(() => { sampleForHud().catch(() => {}) }, HUD_INTERVAL_MS)
   buildMenu()
   refreshTrayMenu()
+}
+
+/**
+ * Brings the badge forward with the application.
+ *
+ * An always-on-top window is above the windows that were there when it was
+ * created; it is not a promise that macOS will keep it in front through a
+ * space switch, another app going full-screen, or the app being hidden and
+ * activated again. Nothing was putting it back, which is what "it falls
+ * behind" was describing. Re-asserting the level and moving it to the top of
+ * its own app's stack is cheap, so it happens on every activation rather than
+ * on a guess about which ones matter.
+ */
+function raiseHud() {
+  if (!hudOpen()) return
+  state.hud.setAlwaysOnTop(true, 'floating')
+  state.hud.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  // showInactive rather than show: bringing the badge forward must not take
+  // the keyboard away from the window the user just clicked into.
+  if (!state.hud.isVisible()) state.hud.showInactive()
+  state.hud.moveTop()
 }
 
 function closeHud() {
@@ -2159,6 +2189,12 @@ if (!locked) {
 } else {
   app.on('second-instance', showWindow)
   app.on('activate', showWindow)
+  // And when a window is reached without going through showWindow — clicked
+  // directly, or switched to with the keyboard. Focusing the badge itself is
+  // not a reason to reorder anything.
+  app.on('browser-window-focus', (_event, window) => {
+    if (window !== state.hud) raiseHud()
+  })
   // Diagnostics only, and the counterpart to the handlers above: a renderer
   // or utility process dying does not end the app, so it leaves no trace at
   // all unless it is written down. "The window went blank" and "the app
