@@ -10,11 +10,18 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { BRAND } from './brand.js'
 
 /** Directory name under the platform's app-data root. */
-export const DATA_DIR = 'dsh-desktop'
-/** Data directory name used before the project was renamed. */
-export const LEGACY_DATA_DIR = 'dsh-shell'
+export const DATA_DIR = BRAND.dataDir
+/**
+ * A name this brand used before, migrated on first run.
+ *
+ * Only the original has one. A build under someone else's brand has no past
+ * to migrate, and inheriting this one would have it adopt a directory that
+ * belongs to a different application.
+ */
+export const LEGACY_DATA_DIR = BRAND.legacyDataDir
 /** Names the relocated directories; always read from the default location. */
 export const POINTER_FILE = 'location.json'
 
@@ -35,10 +42,10 @@ export const POINTER_FILE = 'location.json'
 export function resolveLocations(appData) {
   const notes = []
   const defaultDir = path.join(appData, DATA_DIR)
-  const legacy = path.join(appData, LEGACY_DATA_DIR)
+  const legacy = LEGACY_DATA_DIR === undefined ? undefined : path.join(appData, LEGACY_DATA_DIR)
   let migrated
 
-  if (existsSync(legacy)) {
+  if (legacy !== undefined && existsSync(legacy)) {
     if (existsSync(defaultDir)) {
       // Both present: a half-finished move, or a restored backup. Neither is
       // ours to merge, so take the current name and say where the other is.

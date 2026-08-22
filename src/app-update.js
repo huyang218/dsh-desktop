@@ -26,12 +26,19 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
+import { BRAND } from './brand.js'
 import { activate, isCompatible, readManifest } from './shell-bundle.js'
 import { extractZip } from './zip.js'
 import { t } from './i18n.js'
 
-/** Mirrors package.json's `repository` field; the releases live here. */
-export const REPO = 'huyang218/dsh-desktop'
+/**
+ * Where this build's releases live, or null when the brand names none.
+ *
+ * A branded build left pointing at the original's repository would hot-update
+ * itself back into the original's name and icons, so "not configured" has to
+ * mean no updates rather than these updates.
+ */
+export const REPO = BRAND.updateRepo
 
 /** The manifest asset a release publishes for hot updates. */
 const MANIFEST_ASSET = 'shell-update.json'
@@ -106,6 +113,7 @@ function comparePrerelease(a, b) {
  *   assets: Array<{name: string, url: string, size: number}>}>}
  */
 export async function fetchLatestRelease({ fetchImpl = fetch, repo = REPO } = {}) {
+  if (!repo) throw new Error(t('error.updateNoRepo'))
   const release = await getJson(`https://api.github.com/repos/${repo}/releases/latest`, fetchImpl)
   const tag = String(release?.tag_name ?? '')
   if (!tag) throw new Error(t('error.updateNoRelease'))

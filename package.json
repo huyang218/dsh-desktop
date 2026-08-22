@@ -31,75 +31,14 @@
     "start": "electron .",
     "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
     "predist": "npm run seed",
-    "dist": "electron-builder --dir --publish never",
+    "dist": "electron-builder --config electron-builder.config.cjs --dir --publish never",
     "predist:mac": "npm run seed",
-    "dist:mac": "electron-builder --mac dmg --publish never",
+    "dist:mac": "electron-builder --config electron-builder.config.cjs --mac dmg --publish never",
     "predist:win": "npm run seed",
-    "dist:win": "electron-builder --win nsis --publish never"
+    "dist:win": "electron-builder --config electron-builder.config.cjs --win nsis --publish never"
   },
   "devDependencies": {
     "electron": "^38.0.0",
     "electron-builder": "^26.0.0"
-  },
-  "build": {
-    "appId": "io.github.huyang218.dsh-desktop",
-    "productName": "DeepSeek Harness",
-    "directories": {
-      "output": "dist"
-    },
-    "afterPack": "scripts/adhoc-sign.cjs",
-    "files": [
-      "src/**",
-      "assets/**",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "seed.tar",
-        "to": "runtime-seed.tar"
-      },
-      {
-        "from": "node-runtime.tgz",
-        "to": "node-runtime.tgz"
-      },
-      {
-        "from": "node-runtime.version",
-        "to": "node-runtime.version"
-      }
-    ],
-    "win": {
-      "icon": "assets/icon-1024.png",
-      "target": [
-        "nsis",
-        "dir"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
-    },
-    "mac": {
-      "identity": null,
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "icon": "assets/icon.icns",
-      "category": "public.app-category.developer-tools",
-      "extendInfo": {
-        "CFBundleDocumentTypes": [
-          {
-            "CFBundleTypeName": "Any file",
-            "CFBundleTypeRole": "Viewer",
-            "LSHandlerRank": "Alternate",
-            "LSItemContentTypes": [
-              "public.item"
-            ]
-          }
-        ],
-        "NSDocumentsFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
-        "NSDownloadsFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
-        "NSDesktopFolderUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here.",
-        "NSRemovableVolumesUsageDescription": "需要访问此位置,以便安装和加载存放在这里的 dsh 插件。 / Needed to install and load dsh plugins kept here."
-      }
-    }
   }
 }
