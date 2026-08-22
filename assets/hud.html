@@ -39,20 +39,39 @@
   .close:hover { color: #e9e9ef; }
 
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-  .stat { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-  .value {
-    font: 600 15px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+
+  /* The narrow layouts put the close button in the corner rather than in a
+     row, so it costs no width, and show it only under the pointer: in a badge
+     this small a permanent one would be a quarter of what is on screen. */
+  .card.compact, .card.minimal { position: relative; flex-direction: row; align-items: center; gap: 9px; }
+  .card.compact header, .card.minimal header { flex: none; }
+  .card.compact .title, .card.minimal .title,
+  .card.compact .spacer, .card.minimal .spacer { display: none; }
+  .card.compact .close, .card.minimal .close {
+    position: absolute; top: 3px; right: 5px;
+    opacity: 0; transition: opacity .12s; font-size: 11px;
   }
-  .value .unit { font-size: 10px; font-weight: 500; color: #8a8a96; margin-left: 1px; }
-  .label { font-size: 10px; color: #7a7a86; white-space: nowrap; }
-  /* Busy is worth noticing without being alarming; the badge is a glance. */
-  .value.busy { color: #ffb454; }
+  .card.compact:hover .close, .card.minimal:hover .close { opacity: 1; }
+  .card.compact .label, .card.minimal .label { display: none; }
+
+  /* ── Compact: one row, no labels. The unit carries the meaning — nobody
+     reads "MB" and wonders which number it belongs to — so the labels go and
+     the badge loses half its height. ── */
+  .card.compact { padding: 8px 11px; }
+  .card.compact .stats { flex: 1; grid-template-columns: none; grid-auto-flow: column; gap: 13px; align-items: center; }
+  .card.compact .value { font-size: 14px; }
+
+  /* ── Minimal: the one number worth a glance, and a dot for whether there is
+     anything behind it. ── */
+  .card.minimal { padding: 8px 12px; }
+  .card.minimal .stats { grid-template-columns: none; }
+  .card.minimal .stat:not(:first-child) { display: none; }
+  .card.minimal .value { font-size: 20px; }
+
 </style>
 </head>
 <body>
-  <div class="card">
+  <div class="card" id="card">
     <header>
       <span class="dot" id="dot"></span>
       <span class="title" id="title"></span>
@@ -72,6 +91,11 @@
   const t = key => messages[key] ?? key
   document.documentElement.lang = locale
   document.title = t('hud.title')
+  // The layout arrives in the query string, the same way the language does:
+  // the badge is small enough that a first frame in the wrong shape would be
+  // a visible flinch rather than a detail.
+  const style = new URLSearchParams(location.search).get('style')
+  if (style === 'compact' || style === 'minimal') $('card').classList.add(style)
   $('title').textContent = t('hud.title')
   $('close').title = t('hud.close')
   for (const node of document.querySelectorAll('[data-i18n]')) node.textContent = t(node.dataset.i18n)

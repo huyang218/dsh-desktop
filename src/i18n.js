@@ -274,6 +274,10 @@ const MESSAGES = {
 
     // Performance badge
     'menu.hud': '性能浮标',
+    'menu.hudShow': '显示浮标',
+    'hud.style.standard': '标准',
+    'hud.style.compact': '紧凑',
+    'hud.style.minimal': '极简',
     'hud.title': 'dsh 资源',
     'hud.cpu': 'CPU',
     'hud.memory': '内存',
@@ -624,6 +628,10 @@ const MESSAGES = {
 
 
     'menu.hud': 'Performance badge',
+    'menu.hudShow': 'Show the badge',
+    'hud.style.standard': 'Standard',
+    'hud.style.compact': 'Compact',
+    'hud.style.minimal': 'Minimal',
     'hud.title': 'dsh usage',
     'hud.cpu': 'CPU',
     'hud.memory': 'Memory',
