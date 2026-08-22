@@ -1680,6 +1680,26 @@ function registerSkillIpc() {
 /** How often to read. Windows pays hundreds of milliseconds per sample. */
 const HUD_INTERVAL_MS = process.platform === 'win32' ? 2000 : 1000
 const HUD_SIZE = { width: 232, height: 96 }
+/** Clear of the screen edge, and of a menu bar the work area already excludes. */
+const HUD_MARGIN = 16
+
+/**
+ * Where the badge sits when nothing has been saved.
+ *
+ * A corner, because Electron's default is the middle of the screen and the
+ * middle of the screen is where the user is working. Top right: it is where
+ * this kind of readout lives on both platforms, and it is the corner least
+ * likely to be under something — a Dock or a taskbar sits at the bottom by
+ * default, and the work area only accounts for one that is actually there.
+ *
+ * @param {{x: number, y: number, width: number, height: number}} workArea
+ */
+function hudCorner(workArea) {
+  return {
+    x: workArea.x + workArea.width - HUD_SIZE.width - HUD_MARGIN,
+    y: workArea.y + HUD_MARGIN,
+  }
+}
 
 function hudOpen() {
   return Boolean(state.hud && !state.hud.isDestroyed())
@@ -1718,9 +1738,14 @@ function openHud() {
     return
   }
   const saved = visibleBounds(readSettings().hudBounds, screen.getAllDisplays().map(d => d.workArea))
+  // A saved position that no longer lands on any screen is discarded by
+  // visibleBounds, so an unplugged monitor returns the badge to the corner
+  // rather than to somewhere it cannot be seen or dragged back from.
+  const where = saved ?? hudCorner(screen.getPrimaryDisplay().workArea)
   const win = new BrowserWindow({
     ...HUD_SIZE,
-    ...saved ? { x: saved.x, y: saved.y } : {},
+    x: where.x,
+    y: where.y,
     // A badge, not a window: no frame to take up half of it, no entry in the
     // task switcher, and above whatever the user is actually working in —
     // which is the only position from which it is worth anything.
