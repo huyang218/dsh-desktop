@@ -169,12 +169,18 @@ export function ensureBundledToolchain({ tarPath, versionFile, destBase, log }) 
  *
  * @param {{ nodeDir: string }} toolchain resolved by {@link findToolchain}
  * @param {Record<string, string>} [extra] additional variables to set
+ * @param {{ prepend?: string[] }} [options] directories to put ahead of everything
+ *   on PATH, for commands the shell itself provides to the child
  * @returns {Record<string, string | undefined>}
  */
-export function childEnv(toolchain, extra = {}) {
+export function childEnv(toolchain, extra = {}, { prepend = [] } = {}) {
   return {
     ...process.env,
-    PATH: [toolchain.nodeDir, process.env.PATH ?? '', ...loginShellDirs(), ...globalBinDirs()]
+    // `prepend` comes first, ahead of the bundled Node and of anything the
+    // user's own shell contributes: it holds commands this shell provides to
+    // the child, and a same-named program found elsewhere on PATH would be a
+    // different program.
+    PATH: [...prepend, toolchain.nodeDir, process.env.PATH ?? '', ...loginShellDirs(), ...globalBinDirs()]
       .filter(Boolean)
       .join(path.delimiter),
     ...extra,

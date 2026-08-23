@@ -72,6 +72,19 @@ const MESSAGES = {
     'window.plugins': '插件管理',
     'window.settings': '设置',
     'window.market': '插件市场',
+    'menu.browser': '浏览器侧栏',
+    'menu.browserTools': '允许 agent 操作浏览器',
+
+    // The built-in browser: the strip above the previewed page
+    'preview.back': '后退',
+    'preview.forward': '前进',
+    'preview.reload': '刷新',
+    'preview.external': '用系统浏览器打开',
+    'preview.close': '关闭预览',
+    'preview.address': '输入网址',
+    'preview.newTab': '新建标签页',
+    'preview.closeTab': '关闭标签页',
+    'preview.blankTab': '新标签页',
 
     // Buttons
     'button.retry': '重试',
@@ -454,6 +467,18 @@ const MESSAGES = {
     'window.plugins': 'Plugins',
     'window.settings': 'Settings',
     'window.market': 'Plugin Market',
+    'menu.browser': 'Browser panel',
+    'menu.browserTools': 'Let the agent drive the browser',
+
+    'preview.back': 'Back',
+    'preview.forward': 'Forward',
+    'preview.reload': 'Reload',
+    'preview.external': 'Open in the system browser',
+    'preview.close': 'Close the preview',
+    'preview.address': 'Enter a URL',
+    'preview.newTab': 'New tab',
+    'preview.closeTab': 'Close tab',
+    'preview.blankTab': 'New tab',
 
     'button.retry': 'Retry',
     'button.quit': 'Quit',

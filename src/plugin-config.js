@@ -177,16 +177,29 @@ function renderBlock(store) {
  * else. A pristine profile patch is the literal `[]` (an empty flow
  * sequence), which cannot coexist with block-sequence entries — that token
  * is replaced by the block instead of appended to.
+ *
+ * Exported because the plugin manager is no longer the only thing the shell
+ * maintains a block in: the browser's MCP registration writes one into the
+ * home-level patch, with its own markers and the same rules.
+ *
+ * @param {string} patchPath @param {string} block the whole block, markers
+ *   included; an empty string removes it
+ * @param {{begin: string, end: string}} [markers]
  */
-async function spliceManagedBlock(patchPath, block) {
+export async function spliceManagedBlock(patchPath, block, markers = { begin: MARK_BEGIN, end: MARK_END }) {
+  const { begin: BEGIN, end: END } = markers
   let text = ''
   try {
     text = await readFile(patchPath, 'utf8')
   } catch { /* first write into a profile without a patch file */ }
-  const begin = text.indexOf(MARK_BEGIN)
-  const end = text.indexOf(MARK_END)
+  const begin = text.indexOf(BEGIN)
+  const end = text.indexOf(END)
   if (begin !== -1 && end !== -1 && end >= begin) {
-    text = text.slice(0, begin) + block + text.slice(end + MARK_END.length)
+    text = text.slice(0, begin) + block + text.slice(end + END.length)
+  } else if (block === '') {
+    // Nothing to remove; leave the file exactly as it was rather than
+    // rewriting it and waking the patch watcher for no change.
+    return
   } else if (EMPTY_ARRAY.test(text)) {
     text = text.replace(EMPTY_ARRAY, block)
   } else {

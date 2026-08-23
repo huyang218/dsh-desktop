@@ -88,14 +88,17 @@ async function bind(port) {
  * @param {string} options.dshHome DSH_HOME directory (profiles, sessions, settings)
  * @param {string} options.cwd default workspace root handed to dsh
  * @param {{ nodeBin: string, nodeDir: string, npmCli: string }} options.toolchain
+ * @param {string} [options.binDir] a directory to put first on the child's PATH;
+ *   this is how the shell's own `dsh-open` command reaches the agent
+ * @param {Record<string, string>} [options.env] extra environment for the child
  * @param {(line: string) => void} [options.log] receives server output lines
  * @returns {Promise<import('node:child_process').ChildProcess>}
  */
-export async function startServer({ slotDir, port, dshHome, cwd, toolchain, log }) {
+export async function startServer({ slotDir, port, dshHome, cwd, toolchain, binDir, env, log }) {
   const bin = await dshBinPath(slotDir)
   const child = spawn(toolchain.nodeBin, [bin, 'web', '--port', String(port)], {
     cwd,
-    env: childEnv(toolchain, { DSH_HOME: dshHome }),
+    env: childEnv(toolchain, { DSH_HOME: dshHome, ...env }, { prepend: binDir ? [binDir] : [] }),
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     // Without this the detached child owns a console window on Windows, which

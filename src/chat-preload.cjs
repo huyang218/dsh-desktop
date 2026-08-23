@@ -1,10 +1,13 @@
 /**
  * Preload for the window that hosts the dsh web UI.
  *
- * It exists for one thing: files dropped on the window. Without it a drop
- * the page does not handle makes Chromium navigate the window to the file —
- * the UI disappears and there is no back button, which is a poor answer to
- * a mis-aimed drag.
+ * Three things, all of them about the window rather than about dsh: files
+ * dropped on it, the view state its origin would otherwise lose, and the one
+ * channel the page has into the shell.
+ *
+ * Drops first. Without this a drop the page does not handle makes Chromium
+ * navigate the window to the file — the UI disappears and there is no back
+ * button, which is a poor answer to a mis-aimed drag.
  *
  * The page gets first refusal. If the UI handled the drop (an image pasted
  * into a vision plugin, say) it will have called preventDefault, and this
@@ -14,7 +17,7 @@
  *
  * CommonJS because Electron sandboxed preloads do not load ESM.
  */
-const { ipcRenderer, webUtils } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 
 window.addEventListener('dragover', event => {
   // Without this the drop event never fires and Chromium opens the file.
@@ -100,3 +103,17 @@ setInterval(saveLocalStorage, SNAPSHOT_EVERY_MS)
 // pagehide rather than unload: it fires on the paths that actually happen
 // here — the window closing, and the app quitting under it.
 window.addEventListener('pagehide', saveLocalStorage)
+
+/**
+ * The one thing the page may ask the shell for: show this file in the preview
+ * window.
+ *
+ * Narrow on purpose. It takes a path and returns whether the shell took it —
+ * no listing, no reading, no arbitrary URLs beyond what the main process
+ * itself vets, and nothing that answers a question the page could not already
+ * answer by asking dsh. The wrapper in src/preview.js is the only caller;
+ * see there for why the interception has to happen in the page's own world.
+ */
+contextBridge.exposeInMainWorld('__dshDesktop', {
+  openPreview: target => ipcRenderer.invoke('preview:open', String(target)),
+})

@@ -13,7 +13,8 @@
  * the server process group before exit.
  */
 import {
-  app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, Notification, screen, session, shell, Tray,
+  app, BaseWindow, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, Notification, screen, session,
+  shell, Tray, WebContentsView,
 } from 'electron'
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
@@ -53,6 +54,15 @@ import {
 import { getFreePort, startServer, stopServer, waitHealthy } from './server.js'
 import { createSnapshot, inspectSnapshot, restoreSnapshot } from './snapshot.js'
 import { formatPaths, insertionScript, pathsFromArgv } from './send-to-chat.js'
+import { interceptScript, previewTarget } from './preview.js'
+import { DEFAULT_TEXT_MAX, DEFAULT_WAIT_MS, shortSource } from './browser-ops.js'
+import {
+  clearScript, findScript, locateScript, scrollScript, scrollToScript, selectScript, snapshotScript,
+  textScript, waitScript,
+} from './browser-page.js'
+import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
+import { registerBrowserTools } from './mcp-register.js'
+import { deployBundledSkills } from './bundled-skills.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
@@ -89,7 +99,7 @@ app.on('open-file', (event, filePath) => {
  *   pluginWindows: Record<string, BrowserWindow>,
  * }}
  */
-const state = { quitting: false, restarts: 0, pluginWindows: {} }
+const state = { quitting: false, restarts: 0, pluginWindows: {}, pages: new Map() }
 
 // ── Supervision ─────────────────────────────────────────────────────────────
 // The server can die on its own (an OOM abort inside dsh takes the whole
@@ -137,6 +147,13 @@ function initPaths() {
   // The web UI's own storage, kept so it survives the port — and therefore
   // the origin — changing under it. See src/chat-preload.cjs.
   paths.uiStateFile = path.join(userData, 'ui-state.json')
+  // One command, `dsh-open`, put on the dsh server's PATH. Written on every
+  // launch rather than installed: it names the bundled Node by absolute path,
+  // and that path moves with an app update.
+  paths.binDir = path.join(userData, 'bin')
+  // The skills that ship with the app, unpacked where the server can read
+  // them. Rewritten on every launch; nothing user-owned lives here.
+  paths.bundledSkills = path.join(userData, 'bundled-skills')
   mkdirSync(paths.dshHome, { recursive: true })
 }
 
@@ -188,10 +205,9 @@ function applyLocale(id) {
   if (state.settingsWindow && !state.settingsWindow.isDestroyed()) state.settingsWindow.reload()
   if (state.skillsWindow && !state.skillsWindow.isDestroyed()) state.skillsWindow.reload()
   if (state.hud && !state.hud.isDestroyed()) state.hud.reload()
-  if (state.window && !state.window.isDestroyed() && !state.port) {
+  if (state.chat && !state.port) {
     // Still on the loading page: reload it so its two strings switch too.
-    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
-      .catch(() => {})
+    loadChat(path.join(assets, 'loading.html')).catch(() => {})
   }
 }
 
@@ -375,6 +391,10 @@ async function launchServer() {
     dshHome: paths.dshHome,
     cwd: homedir(),
     toolchain: state.toolchain,
+    // The agent's way to put a page on screen, and the skills that tell it
+    // how. Absent when the socket could not be bound, in which case
+    // `dsh-open` is simply not on the PATH and nothing else changes.
+    ...state.childEnv ? { binDir: paths.binDir, env: state.childEnv } : {},
     log,
   })
   child.on('exit', (code, signal) => {
@@ -397,7 +417,7 @@ async function launchServer() {
     if (state.quitting || state.child !== child) return
     throw new Error(`${t('error.notReady', { port })}${t('dialog.logPath', { path: paths.logFile })}`)
   }
-  if (!window.isDestroyed()) await window.loadURL(`http://127.0.0.1:${port}/`)
+  if (!window.isDestroyed()) await state.chat.webContents.loadURL(`http://127.0.0.1:${port}/`)
   log(`dsh ${runtime.version} serving on ${port} (slot ${runtime.slot})`)
   clearPluginSuspect()
   // Anything that arrived while the app was still starting — which is every
@@ -413,9 +433,7 @@ async function restartServer() {
   const old = state.child
   state.child = undefined
   if (old) await stopServer(old)
-  if (!state.window.isDestroyed()) {
-    await state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
-  }
+  if (!state.window.isDestroyed()) await loadChat(path.join(assets, 'loading.html'))
   await launchServer()
 }
 
@@ -439,7 +457,7 @@ function superviseExit({ code, signal, uptimeMs }) {
   const delayMs = RESTART_BACKOFF_MS[Math.min(attempt, RESTART_BACKOFF_MS.length) - 1]
   log(`auto-restarting in ${delayMs}ms (attempt ${attempt}/${MAX_AUTO_RESTARTS})`)
   if (state.window && !state.window.isDestroyed()) {
-    state.window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` }).catch(() => {})
+    loadChat(path.join(assets, 'loading.html')).catch(() => {})
   }
   state.restartTimer = setTimeout(() => {
     state.restartTimer = undefined
@@ -731,7 +749,7 @@ async function sendFilesToChat(paths) {
   showWindow()
   let outcome
   try {
-    outcome = await state.window.webContents.executeJavaScript(insertionScript(text), true)
+    outcome = await state.chat.webContents.executeJavaScript(insertionScript(text), true)
   } catch (error) {
     outcome = { ok: false, why: String(error?.message ?? error) }
   }
@@ -1058,6 +1076,1412 @@ function registerFileHandoff() {
     const paths = pathsFromArgv(argv, existsSync)
     if (paths.length > 0) sendFilesToChat(paths).catch(error => log(`send-to failed: ${error?.message ?? error}`))
   })
+}
+
+// ── The built-in browser ────────────────────────────────────────────────────
+// A page the agent produced belongs beside the conversation that produced it,
+// not in another application. dsh's own answer — hand the path to the OS,
+// which for .html means the default browser — is right for a terminal install
+// and wrong for this one, and it is not configurable: the gateway takes a
+// boolean about whether paths can be opened at all, never an opener. So the
+// shell shows it in a panel of the same window, and reaches the gesture from
+// two sides: the UI's own file chips (intercepted in the page, see
+// src/preview.js) and a command on the agent's PATH (see src/open-bridge.js).
+//
+// A panel rather than a second window. A window that appears over the app is
+// something to dismiss before the conversation can go on; a panel beside it
+// is something to read while typing, which is what a page opened mid-turn is
+// for.
+
+/** Height of the panel's own furniture: the tab strip over the toolbar. */
+const PANEL_CHROME = 68
+/** The seam between the two, and the only part of it the user can grab. */
+const PANEL_DIVIDER = 5
+/** Narrower than this and the panel is a sliver rather than a page. */
+const PANEL_MIN = 260
+/** What the conversation keeps whatever the panel is dragged to. */
+const CHAT_MIN = 360
+const PANEL_DEFAULT = 460
+/** Every page shares one partition; see prepareSession for why. */
+const PANEL_PARTITION = 'persist:dsh-preview'
+/** Console lines and network entries kept per page, for the agent to ask about. */
+const PANEL_LOG_MAX = 100
+/**
+ * Marks a request the inspector already reported.
+ *
+ * A symbol so that it never reaches the agent: symbol keys are skipped by
+ * JSON, which is the only way this row leaves the process.
+ */
+const CLAIMED = Symbol('claimed')
+/** How long a first load waits for the inspector before going without it. */
+const INSPECTOR_READY_MS = 1500
+/** How many stack frames an error carries into the log. */
+const INSPECTOR_STACK_MAX = 8
+/** A response body longer than this is truncated rather than returned whole. */
+const BODY_MAX = 40_000
+/**
+ * The devices a viewport can be asked for by name.
+ *
+ * Three, not a catalogue: the question an agent is answering is almost always
+ * "does this hold together narrow", and a list of thirty handsets invites
+ * picking one rather than deciding. A width and height can still be given
+ * directly for the case a name does not cover.
+ */
+const VIEWPORTS = {
+  mobile: { width: 390, height: 844, scale: 3, mobile: true },
+  tablet: { width: 820, height: 1180, scale: 2, mobile: true },
+  desktop: { width: 1280, height: 800, scale: 1, mobile: false },
+}
+/** What a phone says it is, for the sites that serve by user agent. */
+const MOBILE_USER_AGENT = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
+
+/** The panel widths this window can actually lay out. @param {number} width content width */
+function clampPanel(wanted, width) {
+  return Math.max(PANEL_MIN, Math.min(wanted, width - CHAT_MIN - PANEL_DIVIDER))
+}
+
+/** Lays the window's views out: chat, seam, panel. */
+function layoutWindow() {
+  const win = state.window
+  if (!win || win.isDestroyed() || !state.chat) return
+  const { width, height } = win.getContentBounds()
+  if (!state.panel) {
+    state.chat.setBounds({ x: 0, y: 0, width, height })
+    return
+  }
+  // Clamped here as well as on drag: the window can be resized down to where
+  // a remembered width would leave no conversation. Display only — the width
+  // the user chose is kept, and comes back when the window has room for it.
+  const panel = clampPanel(state.panelWidth, width)
+  const chatWidth = Math.max(0, width - panel - PANEL_DIVIDER)
+  state.chat.setBounds({ x: 0, y: 0, width: chatWidth, height })
+  state.panel.divider.setBounds({ x: chatWidth, y: 0, width: PANEL_DIVIDER, height })
+  const x = chatWidth + PANEL_DIVIDER
+  state.panel.chrome.setBounds({ x, y: 0, width: panel, height: PANEL_CHROME })
+  // Every page gets the same rectangle, and the one in front is simply the
+  // one on top. A hidden view is not composited, and a view that is not
+  // composited does not receive input events — so `setVisible(false)` would
+  // leave the agent unable to click in any tab but the visible one, which is
+  // most of the point of having tabs. Stacking costs a little compositing
+  // for pages nobody is looking at; it buys a background tab that behaves
+  // exactly like a foreground one.
+  const pageBounds = { x, y: PANEL_CHROME, width: panel, height: Math.max(0, height - PANEL_CHROME) }
+  for (const entry of state.pages.values()) entry.view.setBounds(pageBounds)
+}
+
+/** Loads a page into the dsh UI's view, with the strings the shell's own pages read. */
+function loadChat(file) {
+  return state.chat.webContents.loadFile(file, { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
+}
+
+/**
+ * Shows a target in the side panel, if it is one the panel will take.
+ *
+ * The vetting answer is the caller's answer too: the page interception reads
+ * `false` as "leave this request alone", so a `.docx` or a `mailto:` still
+ * reaches the application that should have it, and `dsh-open` prints a reason
+ * the agent can act on rather than failing silently.
+ *
+ * @param {string} target a path or an http(s) URL
+ * @param {{ wide?: boolean }} [options] wide: also take PDFs and images
+ * @returns {{ ok: true, label: string } | { ok: false, why: string }}
+ */
+function openPreview(target, { wide = false } = {}) {
+  const resolved = previewTarget(target, { wide, exists: existsSync })
+  if (!resolved) return { ok: false, why: 'not a page this panel can show' }
+  if (isHarnessOrigin(resolved.url)) return { ok: false, why: 'that is the harness itself' }
+  if (!state.window || state.window.isDestroyed()) return { ok: false, why: 'no window' }
+  const entry = frontPage() ?? createPage()
+  showPage(entry.id)
+  entry.view.webContents.loadURL(resolved.url).catch(error => log(`preview: ${error?.message ?? error}`))
+  showWindow()
+  return { ok: true, label: resolved.label, page: entry.id }
+}
+
+/**
+ * Whether a URL is the dsh UI's own.
+ *
+ * It is not a document to preview beside itself, and a page served from its
+ * origin would be same-origin with the API this shell exists to hold.
+ * Nothing legitimate asks for it.
+ */
+function isHarnessOrigin(url) {
+  if (!state.port) return false
+  try {
+    return new URL(url).port === String(state.port)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The furniture: the strip and the seam. Pages come and go under it.
+ *
+ * Built on first use and kept until the panel closes, because they are the
+ * panel — a page is what the panel is currently showing, and there can be
+ * several of those.
+ */
+function openPanel() {
+  if (state.panel) return state.panel
+  const window = state.window
+
+  const chrome = new WebContentsView({ webPreferences: { preload: path.join(here, 'preview-preload.cjs') } })
+  chrome.webContents.loadFile(path.join(assets, 'preview.html'))
+  const divider = new WebContentsView({ webPreferences: { preload: path.join(here, 'preview-preload.cjs') } })
+  divider.webContents.loadFile(path.join(assets, 'divider.html'))
+  for (const view of [divider, chrome]) window.contentView.addChildView(view)
+  // The strip may still be loading when the first page is handed over; this
+  // is what puts the address in it when it arrives.
+  chrome.webContents.on('did-finish-load', pushPanelState)
+
+  state.panel = { chrome, divider }
+  state.panelWidth = panelWidth()
+  layoutWindow()
+  // The menu carries a checkmark for this, and the panel opens on the agent's
+  // say-so as often as on the user's.
+  buildMenu()
+  refreshTrayMenu()
+  return state.panel
+}
+
+/**
+ * Opens another page.
+ *
+ * Pages are views of the same window, shown one at a time. A background page
+ * is one the panel is not currently showing: it loads, runs, and answers
+ * every verb exactly like the visible one — which is what lets an agent work
+ * through a list of URLs without the panel flickering through all of them —
+ * and `show` brings any of them to the front.
+ *
+ * @param {{ background?: boolean }} [options]
+ * @returns {{ id: string, view: WebContentsView, console: object[], network: object[] }}
+ */
+function createPage({ background = false } = {}) {
+  openPanel()
+  const view = new WebContentsView({
+    // No preload, its own partition, sandboxed. It is somebody else's HTML,
+    // and quite possibly HTML a model wrote a minute ago.
+    webPreferences: {
+      partition: PANEL_PARTITION,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+    },
+  })
+  state.window.contentView.addChildView(view)
+  const contents = view.webContents
+  const id = `page_${state.pageSeq = (state.pageSeq ?? 0) + 1}`
+  const entry = { id, view, console: [], network: [] }
+  state.pages.set(id, entry)
+
+  prepareSession(contents.session)
+  attachInspector(entry)
+  contents.setWindowOpenHandler(({ url }) => {
+    // A link that wants a new window gets one — a page of ours, in the
+    // background, so the agent can find it in `pages` and the user's panel
+    // does not jump to it. Anything that is not a web page still goes out to
+    // the real browser rather than becoming a page here.
+    if (/^(http|https):/i.test(url) && !isHarnessOrigin(url)) {
+      const opened = createPage({ background: true })
+      opened.view.webContents.loadURL(url).catch(() => {})
+    } else if (/^(http|https):/i.test(url)) {
+      shell.openExternal(url).catch(() => {})
+    }
+    return { action: 'deny' }
+  })
+  contents.on('will-navigate', (event, url) => {
+    // A scheme no browser should follow, and the harness's own origin, which
+    // is not a document and is the one origin where being a page would mean
+    // something.
+    if (!/^(file|http|https):/i.test(url) || isHarnessOrigin(url)) event.preventDefault()
+  })
+  // A new document starts a new log.
+  //
+  // This is the difference between a usable development loop and a
+  // misleading one: the agent changes a file, reloads, asks what the console
+  // says, and must not be told about the error it just fixed. Cleared on the
+  // navigation starting rather than on it committing, because the request for
+  // the document itself completes before the commit and belongs to the page
+  // it is fetching.
+  contents.on('did-start-navigation', (...args) => {
+    const details = args[0] && typeof args[0] === 'object' && 'isMainFrame' in args[0] ? args[0] : undefined
+    const isMainFrame = details ? details.isMainFrame : args[3]
+    const isSameDocument = details ? details.isSameDocument : args[2]
+    if (!isMainFrame || isSameDocument) return
+    entry.console.length = 0
+    entry.network.length = 0
+    entry.pending?.clear()
+    if (entry.inspector === true) enableInspectorDomains(entry)
+  })
+  // Kept for the agent to ask about after the fact: a page that failed is
+  // usually diagnosed by what it logged, not by what it renders.
+  contents.on('console-message', (...args) => {
+    // Silent while the inspector is reporting: it sees the same messages with
+    // a stack attached, and two recorders would log everything twice.
+    if (entry.inspectorConsole) return
+    // Electron changed this signature: newer versions pass one details
+    // object, older ones pass (event, level, message, line, source).
+    const details = args[0] && typeof args[0] === 'object' && 'message' in args[0] ? args[0] : undefined
+    const message = String(details?.message ?? args[2] ?? '')
+    // Electron's own development-build warnings are not the page talking, and
+    // an agent reading this buffer to find out why a page misbehaved should
+    // not have to scroll past them. They do not appear in a packaged build.
+    if (message.includes('Electron Security Warning')) return
+    // Where it came from, when the page says. "Cannot read properties of
+    // null" names no file, and an agent that has to go and find the line
+    // spends a round trip guessing at a bundle it cannot see. Absent for a
+    // message with no script behind it, so it is carried only when there is
+    // one rather than reported as an empty file at line zero.
+    const source = details?.sourceId ?? args[4]
+    const line = Number(details?.lineNumber ?? args[3]) || undefined
+    remember(entry.console, {
+      level: String(details?.level ?? args[1] ?? 'info'),
+      message,
+      ...(source ? { source: String(source), line } : {}),
+    })
+  })
+  contents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    if (isMainFrame) remember(entry.console, { level: 'error', message: `load failed (${code} ${description}) ${url}` })
+  })
+  // Every one of these changes a tab, not only the front one: a background
+  // page finishing its load is exactly what the user wants to see in the
+  // strip while the agent works through a list of systems.
+  for (const event of ['did-navigate', 'did-navigate-in-page', 'did-start-loading', 'did-stop-loading', 'page-title-updated']) {
+    contents.on(event, () => pushPanelState())
+  }
+  contents.on('destroyed', () => { state.pages.delete(id) })
+
+  if (!background || state.front === undefined) showPage(id)
+  else {
+    // Behind whatever is in front, at the same size: it renders, it runs, and
+    // it takes clicks — it is simply not the one on top.
+    layoutWindow()
+    if (state.front) showPage(state.front)
+    pushPanelState()
+  }
+  return entry
+}
+
+/**
+ * The DevTools protocol, attached to one page.
+ *
+ * Three of the things a developer asks a browser for are not in Electron's
+ * own API at all: the body a request came back with, a stack under an error,
+ * and a viewport that is not the size of the panel. All three are one
+ * protocol away, so the panel opens that protocol per page and keeps the
+ * plainer listeners as the fallback.
+ *
+ * A fallback is needed because there is exactly one debugger slot per page
+ * and the user may take it by opening DevTools. That is not an error worth
+ * refusing over — it costs bodies and stacks, not the browser — so the attach
+ * is attempted, the outcome is remembered on the entry, and the two
+ * listeners in {@link createPage} and {@link prepareSession} keep recording
+ * whenever it did not take.
+ *
+ * @param {{id: string, view: object, console: object[], network: object[]}} entry
+ */
+function attachInspector(entry) {
+  const contents = entry.view.webContents
+  entry.pending = new Map()
+  entry.userAgent = contents.getUserAgent()
+  try {
+    contents.debugger.attach('1.3')
+  } catch (error) {
+    entry.inspector = String(error?.message ?? error)
+    entry.ready = Promise.resolve()
+    return
+  }
+  // Claimed synchronously, before the domains are enabled, because the page
+  // starts loading immediately and `enable` resolves a tick later: a flag set
+  // on the reply leaves a window in which both recorders are live and the
+  // first two requests of every page get logged twice.
+  entry.inspector = true
+  entry.inspectorNetwork = true
+  entry.inspectorConsole = true
+  contents.debugger.on('detach', (_event, reason) => {
+    // Everything degrades together: the other recorders are watching these
+    // same flags to decide whether to stay quiet.
+    entry.inspector = `the inspector detached (${reason})`
+    entry.inspectorNetwork = false
+    entry.inspectorConsole = false
+  })
+  contents.debugger.on('message', (_event, method, params) => inspectorEvent(entry, method, params))
+  // A domain that refuses hands its recorder back to the plain listener,
+  // which is why the two are tracked apart rather than as one flag.
+  const [network, runtime] = enableInspectorDomains(entry)
+  // Waited for before the first load, and only there. Enabling a domain is a
+  // round trip to the renderer, and a page told to navigate inside that round
+  // trip reports nothing for the requests it makes first — which are the
+  // document and its scripts, the two an agent asks about most.
+  //
+  // Raced against a deadline because this is instrumentation: a protocol that
+  // does not answer costs a few early log lines, and must never be the reason
+  // the browser will not open a page.
+  entry.ready = Promise.race([
+    Promise.allSettled([network, runtime]),
+    sleep(INSPECTOR_READY_MS),
+  ]).then(() => {})
+}
+
+/**
+ * Turns the two domains on, and returns the promises for doing so.
+ *
+ * Repeated on every cross-document navigation, not only at attach. A load
+ * that swaps the renderer — which the first real load always does, coming
+ * from the blank page a view starts on — leaves the previous renderer's
+ * domain state behind, and the requests the new one makes before the domains
+ * come back are simply not reported. That window is short, but the page's own
+ * script sits inside it: the one request an agent looking at a blank page
+ * most needs to see.
+ *
+ * Sent rather than awaited, because the document is already on its way and
+ * the point is to be enabled before its subresources are requested.
+ */
+function enableInspectorDomains(entry) {
+  const { debugger: inspector } = entry.view.webContents
+  return [
+    inspector.sendCommand('Network.enable', {
+      maxResourceBufferSize: 16 * 1024 * 1024,
+      maxTotalBufferSize: 64 * 1024 * 1024,
+    }).catch(() => { entry.inspectorNetwork = false }),
+    inspector.sendCommand('Runtime.enable').catch(() => { entry.inspectorConsole = false }),
+  ]
+}
+
+/** One protocol event, folded into the page's logs. */
+function inspectorEvent(entry, method, params) {
+  if (method === 'Network.requestWillBeSent') {
+    const url = String(params.request?.url ?? '').slice(0, 300)
+    const requestMethod = params.request?.method
+    // Either recorder can be first — the browser process sees a short request
+    // complete before the renderer's protocol events have made their way
+    // across — so each claims the other's row rather than assuming it leads.
+    const existing = matchingRow(entry, requestMethod, url, row => row.id === undefined)
+    const row = existing ?? { method: requestMethod, url }
+    row.id = params.requestId
+    row.kind = params.type
+    if (existing) existing[CLAIMED] = true
+    entry.pending.set(params.requestId, row)
+    // Remembered when it is sent rather than when it finishes, so a request
+    // that never comes back is still visible — the pending request is often
+    // the whole answer.
+    if (!existing) remember(entry.network, row)
+    return
+  }
+  // Mutated in place: the row is already in the log, and the agent asking
+  // later wants one line per request rather than one per protocol event.
+  const row = entry.pending?.get(params?.requestId)
+  if (method === 'Network.responseReceived' && row) {
+    row.status = params.response?.status
+    row.mime = params.response?.mimeType
+  } else if (method === 'Network.loadingFinished' && row) {
+    row.bytes = params.encodedDataLength
+  } else if (method === 'Network.loadingFailed' && row) {
+    row.error = params.errorText
+  } else if (method === 'Runtime.consoleAPICalled') {
+    const message = params.args?.map(describeRemote).join(' ') ?? ''
+    // The same exclusion the plain listener makes, for the same reason: these
+    // are the shell talking about itself, not the page, and they do not
+    // appear in a packaged build at all.
+    if (message.includes('Electron Security Warning')) return
+    remember(entry.console, {
+      level: String(params.type ?? 'log'),
+      message,
+      ...frameOf(params.stackTrace),
+    })
+  } else if (method === 'Runtime.exceptionThrown') {
+    const detail = params.exceptionDetails ?? {}
+    remember(entry.console, {
+      level: 'error',
+      message: String(detail.exception?.description ?? detail.text ?? 'uncaught exception').split('\n')[0],
+      source: detail.url,
+      line: detail.lineNumber === undefined ? undefined : detail.lineNumber + 1,
+      column: detail.columnNumber === undefined ? undefined : detail.columnNumber + 1,
+      ...frameOf(detail.stackTrace, { keepSource: false }),
+      stack: framesOf(detail.stackTrace),
+    })
+  }
+}
+
+/**
+ * The row the other recorder logged for this same request, if there is one.
+ *
+ * Matched on method and URL, and each row can be matched once — so a page
+ * that asks for the same URL five times ends with five rows rather than one,
+ * even though the pairing between them is only as good as the order they
+ * arrived in. Which of the five carries which id does not change any answer.
+ */
+function matchingRow(entry, method, url, wanted) {
+  return entry.network.find(row => row[CLAIMED] !== true && row.method === method && row.url === url && wanted(row))
+}
+
+/** A protocol value as the short text a log line wants. */
+function describeRemote(argument) {
+  if (argument?.value !== undefined) return typeof argument.value === 'string' ? argument.value : JSON.stringify(argument.value)
+  return String(argument?.description ?? argument?.unserializableValue ?? argument?.type ?? '')
+}
+
+/** Where a call came from: the top frame, in the fields a console line reads. */
+function frameOf(trace, { keepSource = true } = {}) {
+  const frame = trace?.callFrames?.[0]
+  if (!frame || !keepSource) return {}
+  return {
+    source: frame.url || undefined,
+    // The protocol counts from zero and every editor counts from one.
+    line: frame.lineNumber === undefined ? undefined : frame.lineNumber + 1,
+    column: frame.columnNumber === undefined ? undefined : frame.columnNumber + 1,
+  }
+}
+
+/** The frames under an error, shortened to what fits in a log. */
+function framesOf(trace) {
+  const frames = trace?.callFrames ?? []
+  if (frames.length === 0) return undefined
+  return frames.slice(0, INSPECTOR_STACK_MAX).map(frame => {
+    const where = `${shortSource(frame.url) || '<anonymous>'}:${frame.lineNumber + 1}:${frame.columnNumber + 1}`
+    return frame.functionName ? `${frame.functionName} (${where})` : where
+  })
+}
+
+/**
+ * One-time setup for the partition every page shares.
+ *
+ * Shared on purpose: a login the user performs in the panel is a login the
+ * agent can then work behind, which is the whole point of driving a browser
+ * that lives in the user's own application. It is also the sharp edge — a
+ * page can talk the agent into acting as the user — so it is one decision,
+ * made once, in one place, rather than a property of whichever page happens
+ * to be open.
+ *
+ * The listeners are registered against the session, not the page, so they are
+ * registered once and route by `webContentsId`; adding them per page would
+ * leave a handler behind for every page ever opened.
+ */
+function prepareSession(partition) {
+  if (state.panelSessionReady) return
+  state.panelSessionReady = true
+  partition.on('will-download', event => event.preventDefault())
+  partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+  const record = (details, extra) => {
+    const entry = [...state.pages.values()].find(page => page.view.webContents.id === details.webContentsId)
+    if (!entry) return
+    // Claimed rather than skipped.
+    //
+    // These two recorders each see something the other cannot. The inspector
+    // carries ids and retrievable bodies; this listener lives in the browser
+    // process and therefore sees every request, including the ones a renderer
+    // makes in the moment after a cross-document navigation swaps it, while
+    // the inspector's domains are still coming back up. That window reliably
+    // swallows the page's own script — the one request a blank page is about.
+    //
+    // So the inspector's row is matched and marked, and only an unmatched
+    // request is added here. The list is complete because of this listener,
+    // and detailed because of the inspector.
+    const claimable = matchingRow(entry, details.method, String(details.url).slice(0, 300), row => row.id !== undefined)
+    if (claimable) {
+      claimable[CLAIMED] = true
+      return
+    }
+    remember(entry.network, {
+      method: details.method,
+      url: String(details.url).slice(0, 300),
+      ...extra,
+    })
+  }
+  partition.webRequest.onCompleted(details => record(details, { status: details.statusCode }))
+  partition.webRequest.onErrorOccurred(details => record(details, { error: details.error }))
+}
+
+/** A bounded log: the recent past is worth keeping, the whole past is not. */
+function remember(buffer, item) {
+  buffer.push(item)
+  if (buffer.length > PANEL_LOG_MAX) buffer.splice(0, buffer.length - PANEL_LOG_MAX)
+}
+
+/**
+ * Brings a page to the panel — by raising it, not by hiding the others.
+ *
+ * Re-adding a child view moves it to the top of the window's stack, and the
+ * page in front covers the ones behind it exactly. The chrome and the seam
+ * occupy their own rectangles, so where they sit in the stack never shows.
+ *
+ * @param {string} id
+ */
+function showPage(id) {
+  const entry = state.pages.get(id)
+  if (!entry) return false
+  state.front = id
+  state.window.contentView.removeChildView(entry.view)
+  state.window.contentView.addChildView(entry.view)
+  layoutWindow()
+  pushPanelState()
+  return true
+}
+
+/** The page verbs act on unless one is named. @returns {object | undefined} */
+function frontPage() {
+  return state.front === undefined ? undefined : state.pages.get(state.front)
+}
+
+/** Resolves the `page` parameter every verb accepts. */
+function pageFor(id) {
+  if (id === undefined || id === null || id === '') return frontPage()
+  return state.pages.get(String(id))
+}
+
+/** Closes one page, and the panel with it when it was the last. @param {string} id */
+function closePage(id) {
+  const entry = state.pages.get(id)
+  if (!entry) return false
+  state.pages.delete(id)
+  state.window.contentView.removeChildView(entry.view)
+  entry.view.webContents.close()
+  if (state.front === id) {
+    state.front = undefined
+    const next = state.pages.keys().next()
+    if (next.done) closePanel()
+    else showPage(next.value)
+  } else {
+    pushPanelState()
+  }
+  return true
+}
+
+/** What the strip shows about the page in front of it. */
+function pushPanelState() {
+  const panel = state.panel
+  const entry = frontPage()
+  if (!panel || panel.chrome.webContents.isDestroyed()) return
+  const contents = entry?.view.webContents
+  const url = contents?.getURL() ?? ''
+  panel.chrome.webContents.send('preview:state', {
+    url,
+    label: previewLabel(url),
+    loading: Boolean(contents?.isLoading()),
+    canGoBack: Boolean(contents?.navigationHistory.canGoBack()),
+    canGoForward: Boolean(contents?.navigationHistory.canGoForward()),
+    tabs: [...state.pages.values()].map(page => {
+      const pageUrl = page.view.webContents.getURL()
+      return {
+        page: page.id,
+        front: state.front === page.id,
+        // The title when the page has one, and the tail of its address when
+        // it does not: a tab reading "page_3" tells the user nothing about
+        // which of four systems the agent is working in. Chromium titles a
+        // blank page after its URL, which is not a title anybody wants to
+        // read on a tab.
+        title: pageUrl === 'about:blank' ? '' : page.view.webContents.getTitle(),
+        label: previewLabel(pageUrl).split('/').filter(Boolean).pop() ?? '',
+        url: pageUrl,
+        loading: page.view.webContents.isLoading(),
+      }
+    }),
+  })
+}
+
+/** Closes the panel and every page in it; the conversation gets the width back. */
+function closePanel() {
+  const panel = state.panel
+  if (!panel) return
+  state.panel = undefined
+  state.front = undefined
+  for (const entry of state.pages.values()) {
+    state.window.contentView.removeChildView(entry.view)
+    entry.view.webContents.close()
+  }
+  state.pages.clear()
+  for (const view of [panel.chrome, panel.divider]) {
+    state.window.contentView.removeChildView(view)
+    // Destroyed rather than kept for next time: a panel holding a page is a
+    // renderer process, and the next open is a different document anyway.
+    view.webContents.close()
+  }
+  layoutWindow()
+  buildMenu()
+  refreshTrayMenu()
+}
+
+/**
+ * Unpacks the shipped skills and names their directory for the server.
+ *
+ * An environment that already carries `DSH_BUNDLED_SKILL_DIR` is left alone.
+ * dsh takes one bundled root, not a list, so setting ours would silently
+ * replace whatever the user pointed it at — and somebody who set that
+ * variable by hand meant it.
+ *
+ * @returns {Record<string, string>} environment for the server child
+ */
+function bundledSkillEnv() {
+  if (process.env.DSH_BUNDLED_SKILL_DIR) {
+    log('bundled skills: leaving DSH_BUNDLED_SKILL_DIR as the environment set it')
+    return {}
+  }
+  try {
+    const dir = deployBundledSkills({
+      sourceDir: path.join(assets, 'skills'),
+      destDir: paths.bundledSkills,
+    })
+    return { DSH_BUNDLED_SKILL_DIR: dir }
+  } catch (error) {
+    // A skill the agent does not get is a worse agent, not a broken app.
+    log(`bundled skills unavailable: ${error?.message ?? error}`)
+    return {}
+  }
+}
+
+/**
+ * Puts the browser tools in front of the model, or takes them away.
+ *
+ * A setting, because this writes into the user's dsh home and changes what
+ * their agent can do — and because an agent driving a browser that shares the
+ * user's logins is a capability worth being able to switch off without
+ * uninstalling the app.
+ *
+ * @param {string} command the MCP stub's absolute path
+ */
+async function registerTools(command) {
+  const wanted = readSettings().browserTools !== false
+  const outcome = await registerBrowserTools({
+    patchPath: path.join(paths.dshHome, 'cordis.patch.yml'),
+    ...(wanted ? { command } : {}),
+  }).catch(error => `failed: ${error?.message ?? error}`)
+  if (outcome !== 'unchanged') log(`browser tools ${outcome}`)
+}
+
+/**
+ * Opens the browser panel, or closes it.
+ *
+ * The panel appears on its own whenever a page is opened in it, which covers
+ * every case the agent drives. This is the other direction: somebody who
+ * wants a browser, before anything has asked for one. It opens on a blank
+ * tab, because a blank tab with an address field is a browser and an empty
+ * panel is a puzzle.
+ */
+function toggleBrowserPanel() {
+  if (state.panel) {
+    closePanel()
+    return
+  }
+  const entry = createPage()
+  entry.view.webContents.loadURL('about:blank').catch(() => {})
+  showWindow()
+}
+
+/** The remembered panel width, or a sensible one. */
+function panelWidth() {
+  const saved = readSettings().previewPanelWidth
+  return Number.isFinite(saved) && saved >= PANEL_MIN ? saved : PANEL_DEFAULT
+}
+
+/**
+ * What the address strip shows at rest.
+ *
+ * Not the URL. A `file:` URL is percent-encoded, starts with three slashes
+ * and is mostly directories nobody is reading; a deep http URL is mostly
+ * path. The field is a few hundred pixels wide inside a side panel, and a
+ * label clipped by CSS keeps whatever happened to fit — which for a long
+ * path is the middle, the one part that identifies nothing.
+ *
+ * So it is shortened here, by meaning rather than by character count: the
+ * host, or the last two path segments, which is what tells one page from
+ * another. The whole URL is still a keystroke away — the field shows it the
+ * moment it is focused.
+ *
+ * @param {string} url @returns {string}
+ */
+function previewLabel(url) {
+  try {
+    // A blank tab has nothing to say about itself; the strip's own wording
+    // for that is better than the word "blank".
+    if (url === '' || url === 'about:blank') return ''
+    const parsed = new URL(url)
+    if (parsed.protocol === 'file:') {
+      const segments = decodeURIComponent(parsed.pathname).split('/').filter(Boolean)
+      return segments.length <= 2 ? `/${segments.join('/')}` : `…/${segments.slice(-2).join('/')}`
+    }
+    const segments = parsed.pathname.split('/').filter(Boolean)
+    const tail = segments.length <= 1 ? parsed.pathname : `/…/${segments[segments.length - 1]}`
+    return `${parsed.host}${tail === '/' ? '' : tail}${parsed.search ? '?…' : ''}`
+  } catch {
+    return url
+  }
+}
+
+
+// ── Driving it ──────────────────────────────────────────────────────────────
+// The verbs in src/browser-ops.js, executed against a page. Two callers reach
+// them: the MCP server the model gets its tools from, and `dsh-browser` on
+// the command line — both over the socket in src/open-bridge.js, both landing
+// here.
+//
+// Two decisions run through all of it. Input is real: a click is a click at a
+// point, delivered to the compositor, not a DOM event the page can tell apart
+// from a person's. And an action that changes the page answers with a fresh
+// snapshot, because the next thing the agent needs is always what the page
+// became — asking separately costs a round trip and, worse, invites acting on
+// refs that the last action already invalidated.
+
+/** How long to let a page settle after an action before describing it again. */
+const SETTLE_MS = 350
+/** A `eval` result longer than this is summarised rather than returned whole. */
+const EVAL_MAX = 20_000
+
+/**
+ * Runs one browser verb.
+ *
+ * Never throws: every caller is a program the agent is reading the output of,
+ * and a stack trace on stderr is not an answer it can act on. Failures come
+ * back as `{ok: false, why}` in words that say what to do instead.
+ *
+ * @param {string} op @param {object} params
+ * @returns {Promise<object>}
+ */
+async function runBrowserOp(op, params = {}) {
+  if (!Object.hasOwn(BROWSER_VERBS, op)) return { ok: false, why: `unknown command "${op}"` }
+  if (!state.window || state.window.isDestroyed()) return { ok: false, why: 'the app has no window open' }
+  try {
+    return await BROWSER_VERBS[op](params ?? {})
+  } catch (error) {
+    return { ok: false, why: error?.message ?? String(error) }
+  }
+}
+
+/** Resolves the page a verb acts on, or says why it cannot. */
+function requirePage(params) {
+  const entry = pageFor(params.page)
+  if (entry) return entry
+  return params.page
+    ? { error: { ok: false, why: `no page "${params.page}"; use pages to list them` } }
+    : { error: { ok: false, why: 'no page open; use navigate first' } }
+}
+
+/** @type {Record<string, (params: object) => Promise<object>>} */
+const BROWSER_VERBS = {
+  async navigate(params) {
+    const resolved = previewTarget(String(params.url ?? ''), { wide: true, exists: existsSync })
+    if (!resolved) return { ok: false, why: 'not an http(s) URL or a readable local page' }
+    if (isHarnessOrigin(resolved.url)) return { ok: false, why: 'that is the harness itself' }
+    const entry = pageFor(params.page) ?? frontPage() ?? createPage()
+    // A verb aimed at a named page leaves the panel where it is: an agent
+    // working through four systems in four tabs should not drag the window
+    // forward four times.
+    if (params.page === undefined) {
+      if (state.front !== entry.id) showPage(entry.id)
+      showWindow()
+    }
+    await entry.ready
+    // A load that is superseded or refused rejects; the page then still says
+    // what it is showing, which is more useful than the error alone.
+    await entry.view.webContents.loadURL(resolved.url).catch(error => {
+      remember(entry.console, { level: 'error', message: String(error?.message ?? error) })
+    })
+    return describe(entry)
+  },
+
+  back: params => history(params, 'goBack', 'canGoBack'),
+  forward: params => history(params, 'goForward', 'canGoForward'),
+  async reload(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    found.view.webContents.reload()
+    return describe(found)
+  },
+
+  async snapshot(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const described = await describe(found, {
+      settle: 0,
+      snapshot: {
+        ref: params.ref === undefined ? undefined : refNumber(params.ref),
+        within: params.within,
+        filter: params.filter,
+        depth: params.depth,
+        max: params.max,
+      },
+    })
+    // A root that no longer exists is a ref problem, and reads better in the
+    // words every other ref failure already uses.
+    if (described.snapshotError === 'no-match') return { ok: false, why: `nothing on the page matches ${params.within}` }
+    if (described.snapshotError && params.ref !== undefined) return refFailure({ why: described.snapshotError })
+    return described
+  },
+
+  async find(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const result = await found.view.webContents.executeJavaScript(findScript(params.query), true)
+    if (!result.ok) {
+      return result.why === 'no-query'
+        ? { ok: false, why: 'find needs something to look for' }
+        : refFailure({ why: result.why })
+    }
+    return result.hits.length === 0
+      ? { ok: true, page: found.id, elements: [], why: 'nothing in the last snapshot matched' }
+      : { ok: true, page: found.id, elements: result.hits }
+  },
+
+  async text(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const max = Number.isInteger(params.max) && params.max > 0 ? params.max : DEFAULT_TEXT_MAX
+    const result = await found.view.webContents.executeJavaScript(textScript(max), true)
+    return { ok: true, page: found.id, ...result }
+  },
+
+  async click(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const contents = found.view.webContents
+    let point = { x: params.x, y: params.y }
+    let covered
+    if (params.ref !== undefined) {
+      const located = await locate(contents, params.ref)
+      if (!located.ok) return refFailure(located)
+      point = { x: located.x, y: located.y }
+      covered = located.coveredBy
+    }
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return { ok: false, why: 'click needs a ref, or x and y' }
+    const button = ['left', 'right', 'middle'].includes(params.button) ? params.button : 'left'
+    sendClick(contents, point, button, params.doubleClick ? 2 : 1)
+    // Reported rather than refused: clicking a covered point is what a person
+    // clicking there would do, and the agent needs to know a banner ate it.
+    return { ...await describe(found), ...(covered ? { coveredBy: covered } : {}) }
+  },
+
+  async hover(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const located = await locate(found.view.webContents, params.ref)
+    if (!located.ok) return refFailure(located)
+    found.view.webContents.sendInputEvent({ type: 'mouseMove', x: located.x, y: located.y })
+    return describe(found)
+  },
+
+  async type(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const contents = found.view.webContents
+    if (params.ref !== undefined) {
+      const located = await locate(contents, params.ref)
+      if (!located.ok) return refFailure(located)
+      // Clicked rather than focused: a field inside a widget that opens on
+      // click needs the click, and focus() alone leaves such widgets shut.
+      sendClick(contents, located, 'left', 1)
+      await sleep(60)
+    }
+    if (params.clear && params.ref !== undefined) {
+      await contents.executeJavaScript(clearScript(refNumber(params.ref)), true)
+    }
+    // insertText rather than a key event per character: it goes to whatever
+    // has focus, fires the input events a controlled component listens for,
+    // and does not take a second per sentence.
+    contents.insertText(String(params.text ?? ''))
+    if (params.submit) {
+      await sleep(40)
+      pressKey(contents, 'Enter', [])
+    }
+    return describe(found)
+  },
+
+  async select(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const result = await found.view.webContents.executeJavaScript(
+      selectScript(refNumber(params.ref), String(params.value ?? '')), true)
+    if (!result.ok) return { ok: false, why: result.why, ...(result.options ? { options: result.options } : {}) }
+    return describe(found)
+  },
+
+  async key(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const parts = String(params.name ?? '').split('+').map(part => part.trim()).filter(Boolean)
+    const keyCode = parts.pop()
+    if (!keyCode) return { ok: false, why: 'key needs a name, e.g. Enter or Control+a' }
+    pressKey(found.view.webContents, keyCode, parts.map(part => part.toLowerCase()))
+    return describe(found)
+  },
+
+  async scroll(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    if (params.ref !== undefined) {
+      const result = await found.view.webContents.executeJavaScript(scrollToScript(refNumber(params.ref)), true)
+      if (!result.ok) return refFailure(result)
+      return describe(found)
+    }
+    const { height } = found.view.getBounds()
+    const amount = Number.isInteger(params.amount) ? params.amount : Math.round(height * 0.8)
+    const direction = params.direction ?? 'down'
+    const delta = { up: [0, -amount], down: [0, amount], left: [-amount, 0], right: [amount, 0] }[direction]
+    if (!delta) return { ok: false, why: 'scroll takes up, down, left or right' }
+    const moved = await found.view.webContents.executeJavaScript(scrollScript(delta[0], delta[1]), true)
+    return { ...await describe(found), scrolled: moved.moved, atEnd: moved.atEnd }
+  },
+
+  async eval(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const value = await found.view.webContents.executeJavaScript(String(params.js ?? ''), true)
+    let text
+    try {
+      text = value === undefined ? 'undefined' : JSON.stringify(value)
+    } catch {
+      // A circular or exotic value still has a shape worth reporting.
+      text = String(value)
+    }
+    return text !== undefined && text.length > EVAL_MAX
+      ? { ok: true, page: found.id, truncated: true, result: text.slice(0, EVAL_MAX) }
+      : { ok: true, page: found.id, result: text }
+  },
+
+  async screenshot(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const region = ['x', 'y', 'width', 'height'].every(name => Number.isInteger(params[name]))
+      ? { x: params.x, y: params.y, width: params.width, height: params.height }
+      : undefined
+    if (region && (region.width <= 0 || region.height <= 0)) return { ok: false, why: 'a region needs a positive width and height' }
+    const image = await found.view.webContents.capturePage(region)
+    const png = image.toPNG()
+    if (params.path) {
+      const file = path.resolve(String(params.path))
+      writeFileSync(file, png)
+      return { ok: true, page: found.id, path: file, bytes: png.length }
+    }
+    return { ok: true, page: found.id, png: png.toString('base64') }
+  },
+
+  async console(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    let rows = found.console
+    if (params.onlyErrors) rows = rows.filter(row => row.level === 'error')
+    if (params.pattern !== undefined) {
+      const test = compilePattern(params.pattern)
+      if (test.error) return test.error
+      rows = rows.filter(row => test.re.test(row.message))
+    }
+    return { ok: true, page: found.id, messages: lastOf(rows, params.limit) }
+  },
+
+  async network(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    if (params.requestId !== undefined) return responseBody(found, String(params.requestId))
+    let rows = found.network
+    // A failure is a non-2xx as much as it is a transport error; an agent
+    // asking for "what went wrong" means both.
+    if (params.onlyErrors) rows = rows.filter(row => row.error !== undefined || (row.status ?? 0) >= 400)
+    if (params.urlPattern !== undefined) {
+      const test = compilePattern(params.urlPattern)
+      if (test.error) return test.error
+      rows = rows.filter(row => test.re.test(row.url))
+    }
+    const shown = lastOf(rows, params.limit)
+    // Said once rather than marked on every line. A request the inspector
+    // missed still appears — the other recorder saw it — but it has no id, so
+    // its body cannot be asked for, and the fix is a word rather than a
+    // mystery: the requests of a reload are all caught.
+    const bodiless = found.inspectorNetwork && shown.some(row => row.id === undefined)
+    return {
+      ok: true,
+      page: found.id,
+      requests: shown,
+      ...(bodiless ? { why: 'rows with no id were seen too early for the inspector; reload to make their bodies readable' } : {}),
+    }
+  },
+
+  async viewport(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    if (found.inspector !== true) return { ok: false, why: `the viewport cannot be changed: ${found.inspector}` }
+    const contents = found.view.webContents
+    if (params.preset !== undefined && !Object.hasOwn(VIEWPORTS, params.preset)) {
+      return { ok: false, why: `no such preset; try ${Object.keys(VIEWPORTS).join(', ')}` }
+    }
+    const named = params.preset ? VIEWPORTS[params.preset] : undefined
+    const width = Number.isInteger(params.width) ? params.width : named?.width
+    const height = Number.isInteger(params.height) ? params.height : named?.height
+    const notes = []
+    if (params.reset) {
+      await inspectorCommand(contents, 'Emulation.clearDeviceMetricsOverride')
+      await inspectorCommand(contents, 'Emulation.setTouchEmulationEnabled', { enabled: false })
+      await inspectorCommand(contents, 'Emulation.setUserAgentOverride', { userAgent: found.userAgent })
+      notes.push('viewport back to the panel')
+    } else if (width && height) {
+      const mobile = params.mobile ?? named?.mobile ?? false
+      await inspectorCommand(contents, 'Emulation.setDeviceMetricsOverride', {
+        width, height, deviceScaleFactor: named?.scale ?? 1, mobile,
+      })
+      // Touch and the user agent travel with the metrics on purpose: a layout
+      // that is only narrow is not what a phone gets, and the bugs live in
+      // the difference — hover menus with no hover, and desktop pages served
+      // by sniffing.
+      await inspectorCommand(contents, 'Emulation.setTouchEmulationEnabled', { enabled: mobile, maxTouchPoints: mobile ? 5 : 1 })
+      await inspectorCommand(contents, 'Emulation.setUserAgentOverride', { userAgent: mobile ? MOBILE_USER_AGENT : found.userAgent })
+      notes.push(`viewport ${width}x${height}${mobile ? ', touch, mobile user agent' : ''}`)
+    }
+    if (params.colorScheme !== undefined) {
+      if (!['dark', 'light', 'auto'].includes(params.colorScheme)) {
+        return { ok: false, why: 'colorScheme takes dark, light or auto' }
+      }
+      await inspectorCommand(contents, 'Emulation.setEmulatedMedia', params.colorScheme === 'auto'
+        ? { features: [] }
+        : { features: [{ name: 'prefers-color-scheme', value: params.colorScheme }] })
+      notes.push(`prefers-color-scheme: ${params.colorScheme}`)
+    }
+    if (notes.length === 0) return { ok: false, why: 'viewport takes a preset, a width and height, colorScheme, or reset' }
+    return { ...await describe(found), why: notes.join('; ') }
+  },
+
+  async drag(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const contents = found.view.webContents
+    // Both ends are resolved before the button goes down: locating a ref
+    // scrolls it into view, and scrolling mid-drag would move the target out
+    // from under the pointer that is already holding something.
+    const from = await endpoint(contents, params.ref, params.x, params.y)
+    if (from.error) return from.error
+    const to = await endpoint(contents, params.toRef, params.toX, params.toY)
+    if (to.error) return to.error
+    contents.sendInputEvent({ type: 'mouseDown', x: from.x, y: from.y, button: 'left', clickCount: 1 })
+    // Stepped rather than jumped: a drag that never moves is a drag most
+    // implementations ignore, because they start on the first move event.
+    const steps = 12
+    for (let step = 1; step <= steps; step += 1) {
+      contents.sendInputEvent({
+        type: 'mouseMove',
+        x: Math.round(from.x + ((to.x - from.x) * step) / steps),
+        y: Math.round(from.y + ((to.y - from.y) * step) / steps),
+      })
+      await sleep(16)
+    }
+    contents.sendInputEvent({ type: 'mouseUp', x: to.x, y: to.y, button: 'left', clickCount: 1 })
+    return describe(found)
+  },
+
+  async wait(params) {
+    const { error, ...found } = requirePage(params)
+    if (error) return error
+    const contents = found.view.webContents
+    if (params.text === undefined && params.selector === undefined) {
+      await sleep(Math.min(Number.isInteger(params.ms) ? params.ms : 1000, DEFAULT_WAIT_MS))
+      return describe(found, { settle: 0 })
+    }
+    const deadline = Date.now() + (Number.isInteger(params.timeoutMs) ? params.timeoutMs : DEFAULT_WAIT_MS)
+    const script = waitScript({ text: params.text, selector: params.selector })
+    while (Date.now() < deadline) {
+      if (await contents.executeJavaScript(script, true).catch(() => false)) {
+        return describe(found, { settle: 0 })
+      }
+      await sleep(150)
+    }
+    return { ...await describe(found, { settle: 0 }), ok: false, why: 'timed out waiting' }
+  },
+
+  async pages() {
+    const rows = []
+    for (const entry of state.pages.values()) {
+      const contents = entry.view.webContents
+      rows.push({
+        page: entry.id,
+        front: state.front === entry.id,
+        title: contents.getTitle(),
+        url: contents.getURL(),
+        loading: contents.isLoading(),
+      })
+    }
+    return { ok: true, pages: rows }
+  },
+
+  async newPage(params) {
+    const entry = createPage({ background: Boolean(params.background) })
+    if (!params.url) return { ok: true, page: entry.id, front: state.front === entry.id }
+    return BROWSER_VERBS.navigate({ url: params.url, page: entry.id })
+  },
+
+  async show(params) {
+    if (!showPage(String(params.page ?? ''))) return { ok: false, why: `no page "${params.page}"` }
+    showWindow()
+    return describe(pageFor(params.page), { settle: 0 })
+  },
+
+  async closePage(params) {
+    if (!closePage(String(params.page ?? ''))) return { ok: false, why: `no page "${params.page}"` }
+    return { ok: true, closed: params.page, remaining: state.pages.size }
+  },
+
+  async close() {
+    closePanel()
+    return { ok: true, closed: true }
+  },
+}
+
+/** back and forward differ by two method names and nothing else. */
+async function history(params, go, can) {
+  const { error, ...found } = requirePage(params)
+  if (error) return error
+  const contents = found.view.webContents
+  if (!contents.navigationHistory[can]()) return { ok: false, why: `nothing to go ${go === 'goBack' ? 'back' : 'forward'} to` }
+  contents.navigationHistory[go]()
+  return describe(found)
+}
+
+/**
+ * What a page looks like now: url, title, and the list of things to act on.
+ *
+ * Returned by every verb that changes something, because the refs the agent
+ * holds were collected before that change and may no longer mean anything.
+ */
+async function describe(entry, { settle = SETTLE_MS, snapshot: options } = {}) {
+  if (settle) await sleep(settle)
+  const contents = entry.view.webContents
+  // A page still loading is described anyway rather than waited for: a slow
+  // page that never finishes is exactly the case where the agent needs to see
+  // what did arrive, and `wait` is there for when it needs more.
+  const snapshot = await contents.executeJavaScript(snapshotScript(options), true).catch(error => ({
+    nodes: [], truncated: false, url: contents.getURL(), title: contents.getTitle(),
+    error: String(error?.message ?? error),
+  }))
+  return {
+    ok: true,
+    page: entry.id,
+    url: snapshot.url,
+    title: snapshot.title,
+    loading: contents.isLoading(),
+    truncated: snapshot.truncated,
+    elements: snapshot.nodes,
+    ...(snapshot.error ? { snapshotError: snapshot.error } : {}),
+  }
+}
+
+/**
+ * What somebody typing in the address field probably meant.
+ *
+ * A person types `example.com`, not `https://example.com`, and an absolute
+ * path is a path. Everything already carrying a scheme is left exactly as it
+ * is — including the ones the browser will refuse, because guessing at a
+ * `javascript:` line would be the wrong kind of helpful.
+ *
+ * @param {string} typed @returns {string}
+ */
+function typedUrl(typed) {
+  const text = typed.trim()
+  if (text === '' || path.isAbsolute(text)) return text
+  if (/^[a-z][a-z\d+.-]*:/i.test(text)) return text
+  // A bare word with a dot and no space is a host; anything else is not
+  // something this field can turn into an address.
+  return /^[^\s/]+\.[^\s/]+/.test(text) ? `https://${text}` : text
+}
+
+/** `ref_12` and `12` both name the twelfth. */
+function refNumber(ref) {
+  const match = /(\d+)/.exec(String(ref ?? ''))
+  return match ? Number(match[1]) : -1
+}
+
+function locate(contents, ref) {
+  return contents.executeJavaScript(locateScript(refNumber(ref)), true)
+}
+
+/** The four ways a ref can fail, in words that say what to do about it. */
+/** One protocol command, for the verbs that reach past Electron's own API. */
+function inspectorCommand(contents, method, params = {}) {
+  return contents.debugger.sendCommand(method, params)
+}
+
+/**
+ * A filter the agent wrote, as a regular expression.
+ *
+ * Taken as a pattern rather than a substring because the useful questions are
+ * alternations — `404|500`, `/api/(users|orders)` — and a bad pattern is
+ * answered with the reason rather than with an empty list, which would read
+ * as "nothing matched" and send the agent looking in the wrong place.
+ */
+function compilePattern(pattern) {
+  try {
+    return { re: new RegExp(String(pattern), 'i') }
+  } catch (error) {
+    return { error: { ok: false, why: `not a regular expression: ${error?.message ?? error}` } }
+  }
+}
+
+/** The tail of a log, which is the part a question is almost always about. */
+function lastOf(rows, limit) {
+  return Number.isInteger(limit) && limit > 0 ? rows.slice(-limit) : rows
+}
+
+/**
+ * What one request actually came back with.
+ *
+ * The reason the inspector is attached at all. Without it an agent that wants
+ * to know why an endpoint misbehaved has to fetch the URL a second time —
+ * from a different client, without the page's cookies, and with whatever side
+ * effects a second POST carries. This returns the bytes the page itself got.
+ *
+ * The browser drops bodies when the page navigates and when its buffer fills,
+ * so a miss is normal rather than broken, and says so.
+ */
+async function responseBody(entry, requestId) {
+  if (!entry.inspectorNetwork) {
+    return { ok: false, why: `response bodies need the inspector: ${entry.inspector === true ? 'it is attached but not recording' : entry.inspector}` }
+  }
+  if (!entry.network.some(row => row.id === requestId)) {
+    return { ok: false, why: `no request ${requestId} on this page; call network to list them` }
+  }
+  const result = await inspectorCommand(entry.view.webContents, 'Network.getResponseBody', { requestId })
+    .catch(error => ({ failed: String(error?.message ?? error) }))
+  if (result.failed !== undefined || result.body === undefined) {
+    return { ok: false, why: 'the browser no longer holds that body; it is dropped on navigation and when the buffer fills' }
+  }
+  const text = result.base64Encoded ? Buffer.from(result.body, 'base64').toString('utf8') : String(result.body)
+  return text.length > BODY_MAX
+    ? { ok: true, page: entry.id, truncated: true, text: text.slice(0, BODY_MAX) }
+    : { ok: true, page: entry.id, text }
+}
+
+/** One end of a drag: a ref, or a point, or the reason it is neither. */
+async function endpoint(contents, ref, x, y) {
+  if (ref !== undefined) {
+    const located = await locate(contents, ref)
+    return located.ok ? { x: located.x, y: located.y } : { error: refFailure(located) }
+  }
+  if (Number.isFinite(x) && Number.isFinite(y)) return { x, y }
+  return { error: { ok: false, why: 'drag needs a ref, or an x and y, at each end' } }
+}
+
+function refFailure(located) {
+  const why = {
+    'no-snapshot': 'no snapshot on this page yet; call snapshot first',
+    'unknown-ref': 'no such ref in the last snapshot; call snapshot again',
+    'stale-ref': 'that element is gone; the page changed, call snapshot again',
+    'not-visible': 'that element has no size on screen',
+    'not-a-select': 'that element is not a <select>',
+  }[located.why]
+  return { ok: false, why: why ?? located.why ?? 'could not locate that element' }
+}
+
+/** A press and a release at a point — what the compositor sees from a mouse. */
+function sendClick(contents, { x, y }, button, clickCount) {
+  const at = { x, y, button, clickCount }
+  contents.sendInputEvent({ type: 'mouseDown', ...at })
+  contents.sendInputEvent({ type: 'mouseUp', ...at })
+}
+
+/**
+ * Keys that carry a character, and therefore need the `char` event.
+ *
+ * Without it a printable key moves focus and types nothing — and Enter, which
+ * looks like a named key, is the one that matters most: a form submits on the
+ * keypress, so `type --submit` with only keyDown/keyUp fills the field and
+ * then does nothing at all.
+ */
+function carriesCharacter(keyCode, modifiers) {
+  if (modifiers.length > 0) return false
+  return keyCode.length === 1 || keyCode === 'Enter' || keyCode === 'Return' || keyCode === 'Tab'
+}
+
+/** A key press: down, the character if it has one, up. */
+function pressKey(contents, keyCode, modifiers) {
+  contents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
+  if (carriesCharacter(keyCode, modifiers)) contents.sendInputEvent({ type: 'char', keyCode, modifiers })
+  contents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+}
+
+/** @param {number} ms */
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Panel buttons, the seam, and the page's own request to be previewed. */
+function registerPreviewIpc() {
+  const withPage = handler => () => {
+    const entry = frontPage()
+    if (entry) handler(entry.view.webContents)
+  }
+  ipcMain.on('preview:back', withPage(page => page.navigationHistory.goBack()))
+  ipcMain.on('preview:forward', withPage(page => page.navigationHistory.goForward()))
+  ipcMain.on('preview:reload', withPage(page => page.reload()))
+  ipcMain.on('preview:close', () => closePanel())
+  ipcMain.on('preview:external', withPage(page => {
+    const url = page.getURL()
+    // file: included, deliberately: "open in the system browser" on a local
+    // page is the escape hatch back to the behaviour this replaced.
+    if (/^(file|http|https):/i.test(url)) shell.openExternal(url).catch(error => log(`preview external: ${error?.message ?? error}`))
+  }))
+  // The seam reports where the pointer is on screen, not how far it moved:
+  // a drag that outruns the layout would otherwise accumulate the difference
+  // and leave the seam somewhere the pointer is not.
+  ipcMain.on('preview:seam', (_event, screenX) => {
+    if (!state.panel || !Number.isFinite(screenX)) return
+    const bounds = state.window.getContentBounds()
+    // Clamped before it is stored, not only before it is drawn: a drag that
+    // ran past the conversation's floor would otherwise be remembered as the
+    // width the user wanted, and restored on a wider window as a panel that
+    // takes nearly everything.
+    state.panelWidth = clampPanel(Math.round(bounds.x + bounds.width - screenX), bounds.width)
+    layoutWindow()
+  })
+  ipcMain.on('preview:seam-done', () => {
+    if (state.panel) writeSettings({ previewPanelWidth: state.panelWidth })
+  })
+  ipcMain.on('preview:navigate', (_event, typed) => {
+    runBrowserOp('navigate', { url: typedUrl(String(typed ?? '')) })
+      .then(result => { if (!result.ok) log(`address bar: ${result.why}`) })
+  })
+  ipcMain.on('preview:select-tab', (_event, id) => { showPage(String(id)) })
+  ipcMain.on('preview:close-tab', (_event, id) => { closePage(String(id)) })
+  ipcMain.on('preview:new-tab', () => {
+    createPage()
+    pushPanelState()
+  })
+  // From the dsh UI's own page, through the wrapper in src/preview.js. It
+  // gets a plain boolean: the page is not ours, and "why not" is a sentence
+  // for the agent's console, not for a fetch that is about to fall through.
+  ipcMain.handle('preview:open', (event, target) => {
+    if (event.sender !== state.chat?.webContents) return false
+    return openPreview(String(target ?? '')).ok
+  })
+}
+
+/**
+ * Starts the agent's side of it: the socket, and the command that writes to it.
+ *
+ * Needs the toolchain, because the command it writes is a stub around the
+ * bundled Node. Failure here costs the agent one way of showing a page and
+ * nothing else, so it is logged rather than raised — the UI's own chips still
+ * work, and so does the system browser.
+ *
+ * @returns {Promise<{ DSH_DESKTOP_OPEN_SOCKET: string, DSH_DESKTOP_OPEN_TOKEN: string } | undefined>}
+ */
+async function startOpenBridge() {
+  try {
+    const address = bridgeAddress(app.getPath('userData'))
+    const token = mintToken()
+    state.openBridge = await startBridge({
+      address,
+      token,
+      run: async (op, params) => {
+        const result = await runBrowserOp(op, params)
+        // One line per call, and the answer is not in it: a snapshot is
+        // hundreds of elements and the log is for support, not for a
+        // transcript of everything the agent looked at.
+        log(`browser ${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
+        return result
+      },
+      log,
+    })
+    const commands = writeOpenCommand({ binDir: paths.binDir, nodeBin: state.toolchain.nodeBin, srcDir: here })
+    await registerTools(commands['dsh-browser-mcp'])
+    return { DSH_DESKTOP_OPEN_SOCKET: address, DSH_DESKTOP_OPEN_TOKEN: token, ...bundledSkillEnv() }
+  } catch (error) {
+    log(`open bridge unavailable: ${error?.message ?? error}`)
+    return undefined
+  }
 }
 
 function registerSettingsIpc() {
@@ -1605,7 +3029,9 @@ function skillRoots() {
   return {
     dshHome: paths.dshHome,
     agentsHome: process.env.DSH_AGENTS_HOME ?? path.join(homedir(), '.agents'),
-    bundledDir: process.env.DSH_BUNDLED_SKILL_DIR,
+    // Whatever the server was actually given, so the window lists the skills
+    // the agent has rather than the ones this shell would have supplied.
+    bundledDir: state.childEnv?.DSH_BUNDLED_SKILL_DIR ?? process.env.DSH_BUNDLED_SKILL_DIR,
   }
 }
 
@@ -2278,6 +3704,12 @@ function pluginItems() {
 function actionItems() {
   return [
     {
+      label: `${state.panel ? '\u2713' : '\u2007\u2007'} ${t('menu.browser')}`,
+      accelerator: 'CommandOrControl+B',
+      click: toggleBrowserPanel,
+    },
+    { type: 'separator' },
+    {
       label: t('menu.settings'),
       submenu: [
         { label: t('menu.language'), submenu: languageItems() },
@@ -2325,6 +3757,18 @@ function actionItems() {
             writeSettings({ startHidden: next })
             // Keep the login item's own hidden flag in step on macOS.
             if (opensAtLogin()) setOpensAtLogin(true)
+            buildMenu()
+            refreshTrayMenu()
+          },
+        },
+        {
+          label: `${readSettings().browserTools !== false ? '\u2713' : '\u2007\u2007'} ${t('menu.browserTools')}`,
+          click: () => {
+            writeSettings({ browserTools: readSettings().browserTools === false })
+            // Written into the user's dsh home, which dsh watches: the tools
+            // appear or disappear without restarting anything.
+            registerTools(path.join(paths.binDir, process.platform === 'win32' ? 'dsh-browser-mcp.cmd' : 'dsh-browser-mcp'))
+              .catch(error => log(`browser tools: ${error?.message ?? error}`))
             buildMenu()
             refreshTrayMenu()
           },
@@ -2521,13 +3965,18 @@ async function main() {
   })
   registerSettingsIpc()
   registerFileHandoff()
+  registerPreviewIpc()
   // Before the first child is spawned and before anything is fetched: the
   // runtime install on a first launch is exactly the thing a user behind a
   // proxy needs this for.
   await applyProxy(proxySetting()).catch(error => log(`could not apply the proxy setting: ${error?.message ?? error}`))
   const settings = readSettings()
   const bounds = savedBounds()
-  const window = new BrowserWindow({
+  // A BaseWindow rather than a BrowserWindow: the window holds views side by
+  // side — the dsh UI, and the panel a previewed page opens in — and a
+  // BrowserWindow's own web contents always fills it, leaving nowhere for the
+  // second one to go. The UI is a view like any other from here on.
+  const window = new BaseWindow({
     width: 1280,
     height: 840,
     ...bounds,
@@ -2535,23 +3984,43 @@ async function main() {
     // Starting hidden means starting in the tray: the server comes up, the
     // window is built and loaded, and nothing appears until it is asked for.
     show: !settings.startHidden,
+  })
+  const chat = new WebContentsView({
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      // Only for files dropped on the window; it exposes nothing to the page.
+      // Files dropped on the window, the view state the origin would lose,
+      // and the one call the page may make into the shell.
       preload: path.join(here, 'chat-preload.cjs'),
     },
   })
+  window.contentView.addChildView(chat)
+  state.window = window
+  state.chat = chat
+  layoutWindow()
+  window.on('resize', layoutWindow)
   if (settings.windowMaximized) window.maximize()
   rememberBounds(window)
-  state.window = window
+  // On every load, not once: the UI is reloaded when the server restarts and
+  // when the user asks for it, and each reload is a fresh page with an
+  // unwrapped `fetch`. Cheap enough to repeat — the script installs nothing
+  // the second time.
+  chat.webContents.on('did-finish-load', () => {
+    chat.webContents.executeJavaScript(interceptScript(), true)
+      // Only the surprising answer is logged. `false` means the page had no
+      // bridge to install against — the UI's file chips will be going to the
+      // system browser, and this line is the difference between diagnosing
+      // that and guessing at it.
+      .then(installed => { if (!installed) log('preview interception: not installed') })
+      .catch(error => log(`preview interception: ${error?.message ?? error}`))
+  })
   // Close hides; the server keeps running until the app itself quits.
   window.on('close', event => {
     if (state.quitting) return
     event.preventDefault()
     window.hide()
   })
-  await window.loadFile(path.join(assets, 'loading.html'), { search: `lang=${getLocale()}&app=${encodeURIComponent(BRAND.name)}` })
+  await loadChat(path.join(assets, 'loading.html'))
   try {
     // Packaged builds prefer the app-bundled Node; the system search is the
     // dev-mode path and the fallback for a missing/corrupt bundle.
@@ -2564,6 +4033,9 @@ async function main() {
       })
       : undefined) ?? findToolchain()
     log(`toolchain: ${state.toolchain.nodeBin}`)
+    // Before the server: its environment carries the socket address, and a
+    // bridge started afterwards would reach a child that never heard of it.
+    state.childEnv = await startOpenBridge()
     state.runtime = await ensureRuntime({
       baseDir: paths.runtimeBase,
       toolchain: state.toolchain,
@@ -2655,6 +4127,10 @@ if (!locked) {
     clearInterval(state.hudTimer)
     state.hudTimer = undefined
     if (hudOpen()) state.hud.destroy()
+    // Closing the socket unlinks it, so the next launch does not have to
+    // decide whether a leftover address belongs to a live app or a dead one.
+    state.openBridge?.close()
+    state.openBridge = undefined
     if (state.child) {
       event.preventDefault()
       log('stopping dsh server')

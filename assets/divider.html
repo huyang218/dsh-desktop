@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+  /* The seam between the conversation and the panel. A whole view for five
+     pixels, because the alternative — a grip inside the panel's own strip —
+     is a target the user has to find, and a seam is one they already know how
+     to reach. */
+  :root { color-scheme: light dark; --border: #e0e0e6; --warm: #cfcfd8; --hot: #3b62d9; }
+  @media (prefers-color-scheme: dark) { :root { --border: #2a2a33; --warm: #3a3a45; --hot: #5b7cf0; } }
+  html {
+    height: 100%; margin: 0; overflow: hidden;
+    background: var(--border); cursor: col-resize;
+    /* Nothing here is text, and a seam that highlights blue on a stray
+       double-click looks broken. */
+    user-select: none;
+  }
+  /* Hover only darkens: a full-height accent bar for passing the cursor over
+     the seam reads as a selection. The accent is for the drag itself. */
+  html:hover { background: var(--warm); }
+  html.dragging { background: var(--hot); }
+  body { height: 100%; margin: 0; }
+</style>
+</head>
+<body>
+<script>
+  // Pointer capture, on the root element and not on the body: the pointer
+  // leaves this five-pixel view on the first millimetre of every drag, and
+  // without capture the move events go to whatever is under it — a page in
+  // the panel, or the dsh UI, neither of which is listening. Capture also
+  // retargets the events at the capturing element, which is why every
+  // listener here is on the same one.
+  const seam = document.documentElement
+  // The drag is tracked by this flag rather than by asking whether the
+  // pointer is still captured: a synthetic pointer (and a real one whose
+  // capture the compositor dropped mid-gesture) can arrive under a different
+  // pointerId than the one the press claimed, and a seam that stops following
+  // the cursor halfway through a drag is worse than one that never captured.
+  let dragging = false
+
+  const stop = () => {
+    if (!dragging) return
+    dragging = false
+    seam.classList.remove('dragging')
+    window.dshPreview.seamDone()
+  }
+
+  seam.addEventListener('pointerdown', event => {
+    try { seam.setPointerCapture(event.pointerId) } catch { /* the flag is the fallback */ }
+    event.preventDefault()
+    dragging = true
+    seam.classList.add('dragging')
+  })
+  seam.addEventListener('pointermove', event => {
+    if (!dragging) return
+    // Where the pointer is, not how far it moved: a drag that outruns the
+    // layout would otherwise accumulate the difference and leave the seam
+    // somewhere the pointer is not.
+    window.dshPreview.seam(event.screenX)
+  })
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+    seam.addEventListener(type, stop)
+  }
+</script>
+</body>
+</html>

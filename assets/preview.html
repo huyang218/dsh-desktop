@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+  /* Tokens match the other shell windows; the page below this bar is
+     somebody else's document and gets no say in how the bar looks. */
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f6f8; --surface: #ffffff; --border: #e0e0e6;
+    --text: #1c1c22; --text-muted: #6b6b78; --hover: #ececf1; --accent: #3b62d9;
+    --tab-bg: #e6e6ec; --tab-active: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1b1b21; --surface: #24242b; --border: #2a2a33;
+      --text: #e9e9ef; --text-muted: #9a9aa6; --hover: #2f2f38; --accent: #5b7cf0;
+      --tab-bg: #202027; --tab-active: #2c2c35;
+    }
+  }
+  /* The furniture is exactly as tall as the strip main.js reserves for it;
+     everything below belongs to a separate view. */
+  html { height: 100%; margin: 0; background: var(--bg); }
+  body {
+    height: 68px; margin: 0; overflow: hidden;
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    border-bottom: 1px solid var(--border);
+    user-select: none;
+  }
+
+  /* ── Tabs ─────────────────────────────────────────────────────────────
+     One row, scrolled rather than shrunk to nothing: an agent testing four
+     systems at once has four tabs, and a tab too narrow to read is the same
+     as no tab at all. */
+  #tabs {
+    display: flex; align-items: stretch; gap: 2px; height: 30px; flex: none;
+    padding: 3px 4px 0; box-sizing: border-box;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  #tabs::-webkit-scrollbar { display: none; }
+  .tab {
+    display: flex; align-items: center; gap: 4px;
+    min-width: 74px; max-width: 190px; padding: 0 4px 0 9px;
+    border-radius: 7px 7px 0 0; background: var(--tab-bg); color: var(--text-muted);
+    cursor: default; flex: 0 1 auto;
+  }
+  .tab.active { background: var(--tab-active); color: var(--text); }
+  .tab .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A tab the agent opened and has not shown yet: it is doing something in
+     there, and the user should be able to tell which one. */
+  .tab.busy .label { font-style: italic; }
+  .tab .shut {
+    flex: none; width: 15px; height: 15px; border: 0; border-radius: 4px; padding: 0;
+    background: transparent; color: inherit; cursor: pointer; opacity: 0.55;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tab .shut:hover { background: var(--hover); opacity: 1; }
+  #newtab {
+    flex: none; align-self: center; width: 22px; height: 22px; margin-left: 2px;
+    border: 0; border-radius: 6px; background: transparent; color: var(--text-muted);
+    cursor: pointer; font-size: 15px; line-height: 1;
+  }
+  #newtab:hover { background: var(--hover); color: var(--text); }
+
+  /* ── Toolbar ──────────────────────────────────────────────────────── */
+  #bar { display: flex; align-items: center; gap: 4px; height: 34px; flex: none; padding: 0 8px; }
+  #bar button {
+    display: flex; align-items: center; justify-content: center;
+    width: 26px; height: 24px; flex: none;
+    border: 0; border-radius: 6px; background: transparent; color: var(--text);
+    cursor: pointer; padding: 0;
+  }
+  #bar button:hover:not(:disabled) { background: var(--hover); }
+  #bar button:disabled { color: var(--text-muted); opacity: 0.4; cursor: default; }
+  #bar button svg { width: 15px; height: 15px; }
+  #address {
+    flex: 1; min-width: 0; margin: 0 4px; padding: 4px 10px; height: 24px;
+    box-sizing: border-box; font: inherit;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
+    color: var(--text-muted); user-select: text;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #address:focus { outline: none; border-color: var(--accent); color: var(--text); }
+  #address::placeholder { color: var(--text-muted); opacity: 0.75; }
+  /* Loading shows in the address pill rather than as a bar: a progress strip
+     over a document that may itself be a chart is noise. */
+  #address.loading { color: var(--accent); }
+</style>
+</head>
+<body>
+  <div id="tabs"></div>
+  <div id="bar">
+    <button id="back" title="" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg></button>
+    <button id="forward" title="" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg></button>
+    <button id="reload" title=""><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.6-3.7"/><path d="M13 2.5V5h-2.5"/></svg></button>
+    <input id="address" type="text" spellcheck="false" placeholder="">
+    <button id="external" title=""><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h4v4"/><path d="M13 3 7.5 8.5"/><path d="M12 10v2.5A1.5 1.5 0 0 1 10.5 14h-7A1.5 1.5 0 0 1 2 12.5v-7A1.5 1.5 0 0 1 3.5 4H6"/></svg></button>
+    <button id="close" title=""><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+  </div>
+<script>
+  // The payload is {locale, messages}, the same shape the other shell pages
+  // unpack; the map is what everything here looks keys up in.
+  const { messages: strings } = window.dshPreview.i18n
+  const address = document.getElementById('address')
+  const tabs = document.getElementById('tabs')
+  const buttons = {
+    back: document.getElementById('back'),
+    forward: document.getElementById('forward'),
+    reload: document.getElementById('reload'),
+    external: document.getElementById('external'),
+    close: document.getElementById('close'),
+  }
+  for (const [name, button] of Object.entries(buttons)) {
+    button.title = strings[`preview.${name}`] ?? ''
+    button.addEventListener('click', () => window.dshPreview[name]())
+  }
+  address.placeholder = strings['preview.address'] ?? ''
+
+  /* The address field shows a short label at rest and the whole URL the
+     moment it is being edited — a file path's identifying end is what fits,
+     and a URL you are about to change has to be all there. */
+  let full = ''
+  let label = ''
+  let editing = false
+  address.addEventListener('focus', () => {
+    editing = true
+    address.value = full
+    address.select()
+  })
+  address.addEventListener('blur', () => {
+    editing = false
+    address.value = label
+  })
+  address.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { address.value = full; address.blur(); return }
+    if (event.key !== 'Enter') return
+    const typed = address.value.trim()
+    if (typed) window.dshPreview.navigate(typed)
+    address.blur()
+  })
+
+  /* An input can only ellipsise on the right, and the right is where a
+     path's identity lives. So the resting label is pre-trimmed from the
+     front: what survives is the end, which is the part that says which page
+     this is. */
+  const trimFront = text => (text.length > 68 ? `…${text.slice(-67)}` : text)
+
+  window.dshPreview.onState(state => {
+    full = state.url ?? ''
+    label = trimFront(state.label ?? '')
+    if (!editing) address.value = label
+    address.title = full
+    address.classList.toggle('loading', Boolean(state.loading))
+    buttons.back.disabled = !state.canGoBack
+    buttons.forward.disabled = !state.canGoForward
+    renderTabs(state.tabs ?? [])
+  })
+
+  /* Rebuilt rather than diffed: a handful of tabs, and a rebuild cannot leave
+     a stale one behind pointing at a page that has closed. */
+  function renderTabs(list) {
+    tabs.textContent = ''
+    for (const entry of list) {
+      const tab = document.createElement('div')
+      tab.className = 'tab' + (entry.front ? ' active' : '') + (entry.loading ? ' busy' : '')
+      tab.title = entry.url || entry.page
+      const text = document.createElement('span')
+      text.className = 'label'
+      text.textContent = entry.title || entry.label || strings['preview.blankTab'] || '…'
+      tab.append(text)
+      const shut = document.createElement('button')
+      shut.className = 'shut'
+      shut.textContent = '×'
+      shut.title = strings['preview.closeTab'] ?? ''
+      shut.addEventListener('click', event => {
+        event.stopPropagation()
+        window.dshPreview.closeTab(entry.page)
+      })
+      tab.append(shut)
+      tab.addEventListener('mousedown', event => {
+        // Middle-click closes, the way it does in every other browser.
+        if (event.button === 1) { event.preventDefault(); window.dshPreview.closeTab(entry.page) }
+        else if (event.button === 0) window.dshPreview.selectTab(entry.page)
+      })
+      tabs.append(tab)
+    }
+    const add = document.createElement('button')
+    add.id = 'newtab'
+    add.textContent = '+'
+    add.title = strings['preview.newTab'] ?? ''
+    add.addEventListener('click', () => window.dshPreview.newTab())
+    tabs.append(add)
+  }
+</script>
+</body>
+</html>
