@@ -94,8 +94,16 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          # The notes are the tag's CHANGELOG.md section plus which file to
+          # download; a version nobody wrote an entry for falls back to the
+          # generated commit range rather than publishing an empty release.
+          if node scripts/release-notes.mjs "$tag" > release-notes.md; then
+            notes=(--notes-file release-notes.md)
+          else
+            notes=(--generate-notes)
+          fi
           gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --verify-tag --generate-notes --title "$tag" \
+            || gh release create "$tag" --verify-tag "${notes[@]}" --title "$tag" \
             || gh release view "$tag" >/dev/null
           gh release upload "$tag" "shell-$version.zip" shell-update.json --clobber
 
@@ -205,8 +213,16 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          # The notes are the tag's CHANGELOG.md section plus which file to
+          # download; a version nobody wrote an entry for falls back to the
+          # generated commit range rather than publishing an empty release.
+          if node scripts/release-notes.mjs "$tag" > release-notes.md; then
+            notes=(--notes-file release-notes.md)
+          else
+            notes=(--generate-notes)
+          fi
           gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --verify-tag --generate-notes --title "$tag" \
+            || gh release create "$tag" --verify-tag "${notes[@]}" --title "$tag" \
             || gh release view "$tag" >/dev/null
           gh release upload "$tag" ${{ matrix.artifacts }} --clobber
 
