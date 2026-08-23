@@ -2,6 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
+[![Release](https://img.shields.io/github/v/release/huyang218/dsh-desktop?label=release)](https://github.com/huyang218/dsh-desktop/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#platform-support)
 
@@ -13,6 +14,50 @@ A desktop app for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-har
 > its own source tree.
 
 The repository is named `dsh-desktop`; the packaged application is named **DeepSeek Harness** (see [Trademarks](#trademarks)).
+
+<p align="center">
+  <img src="docs/images/main.png" alt="The dsh web UI in a desktop window" width="820">
+</p>
+
+## Download
+
+Installers are attached to every [release](https://github.com/huyang218/dsh-desktop/releases/latest). Nothing needs to be preinstalled — the build carries its own Node runtime, and `dsh` itself is fetched on first launch.
+
+| Platform | File |
+|---|---|
+| **macOS** (Apple Silicon) | `DeepSeek Harness-<version>-arm64.dmg` |
+| **macOS** (Intel) | `DeepSeek Harness-<version>-x64.dmg` |
+| **Windows** 10 (1803+) / 11 | `DeepSeek Harness Setup <version>.exe` |
+
+macOS builds are ad-hoc signed and not notarized, so the first launch needs approval under System Settings → Privacy & Security. Conversations need a DeepSeek API key, entered in the web UI on first run.
+
+## What it looks like
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/images/plugin-market.png" alt="Plugin Market window listing DSH Market entries with stars and one-click install">
+<br><b>Plugin Market</b> — the DSH Market catalog in a window, searchable, cached for offline browsing, one click to install a verified entry.
+</td>
+<td width="50%" valign="top">
+<img src="docs/images/plugins.png" alt="Plugin manager listing installed plugins with update, disable, settings and remove">
+<br><b>Plugin manager</b> — install by npm name, GitHub URL, local path or zip; update, switch off, configure or remove what is installed.
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/images/proxy.png" alt="Proxy settings covering both the Chromium and the child-process network">
+<br><b>One proxy setting, two networks</b> — the window's own requests go through Chromium; npm, pnpm and the <code>dsh</code> server read the environment. Set once, tested separately.
+</td>
+<td width="50%" valign="top">
+<img src="docs/images/hud.png" alt="Performance badge showing CPU, memory, threads and process count" width="300">
+<br><img src="docs/images/hud-capybara.png" alt="The same badge in one of its character styles" width="360">
+<br><b>Performance badge</b> — what the harness costs right now, across the whole process group. A real CPU rate, not the lifetime average <code>ps</code> reports.
+</td>
+</tr>
+</table>
+
+Sibling projects: [dsh-android](https://github.com/huyang218/dsh-android) puts the same runtime on a phone, and [dsh-plugins](https://github.com/huyang218/dsh-plugins) is a collection of plugins the plugin manager here installs directly. See [Related projects](#related-projects).
 
 ## Why
 
@@ -33,7 +78,7 @@ The repository is named `dsh-desktop`; the packaged application is named **DeepS
 | **Storage** | `DSH_HOME` points inside the app's data directory, so profiles, sessions and settings are all owned by the app. The menu opens the data directory and the log directly. A snapshot of the data can be exported and restored — the runtime can fall back a slot, the shell can fall back to the packaged copy, a plugin can be switched off, and sessions had no way back at all until this. A restore checks the archive is a data-directory snapshot first, and the directory it replaces is renamed aside rather than deleted. |
 | **Proxy setting** | The app has two unrelated networks: its own requests go through Chromium, while npm (the runtime), pnpm (plugins) and the `dsh` server that calls the model API read proxy variables from their environment. A GUI app launched from Finder or the Start menu gets neither — the proxy exported in a shell profile is invisible to it, and the system-wide setting is often switched off. Settings → Proxy… configures both at once, and tests each separately. |
 | **Bundled toolchain** | Packaged builds carry their own Node runtime, so a target machine needs nothing preinstalled. Running from source falls back to finding Node ≥ 22 on the machine (PATH, nvm, Homebrew, `%ProgramFiles%`), which also sidesteps GUI apps not inheriting a shell `PATH`. That inheritance is the wider problem: `dsh` looks on `PATH` for pnpm to install plugins and for the Claude Code and Codex CLIs it can delegate to, and a double-clicked app on macOS is handed `/usr/bin:/bin:/usr/sbin:/sbin`. So the user's own shell is asked, once per run, what its `PATH` is — which covers whichever version manager and install location they actually use, rather than a list of the ones we thought of — and the answer is appended, with the usual package-manager directories behind it for when the shell cannot be asked. |
-| **Plugin manager** | Install, update and remove `dsh` plugins from a window: by npm name, GitHub page URL (including a link to one package of a collection repository, `…/tree/main/packages/xxx`), `github:` spec, absolute local path, or a zip package — a zip is unpacked into `<data dir>/dsh-home/plugins/<package name>` and installed from there as a local path. Installed plugins are checked in the background against the registry npm is configured to use (mirrors included), and a newer version is flagged. A plugin can be switched off and back on without uninstalling — that writes `disabled: true` on its loader row, the runtime's own mechanism, rather than editing the profile's bundle list, which `dsh plugin` rebuilds from what is installed on every operation. A plugin that exports a config schema gets a generated form; values are written to the profile's `plugin-config.json` and mirrored, along with the switched-off state, into a marked block in `cordis.patch.yml`. |
+| **Plugin manager** | Install, update and remove `dsh` plugins from a window: by npm name, GitHub page URL (including a link to one package of a collection repository, `…/tree/main/packages/xxx`, as in [dsh-plugins](https://github.com/huyang218/dsh-plugins)), `github:` spec, absolute local path, or a zip package — a zip is unpacked into `<data dir>/dsh-home/plugins/<package name>` and installed from there as a local path. Installed plugins are checked in the background against the registry npm is configured to use (mirrors included), and a newer version is flagged. A plugin can be switched off and back on without uninstalling — that writes `disabled: true` on its loader row, the runtime's own mechanism, rather than editing the profile's bundle list, which `dsh plugin` rebuilds from what is installed on every operation. A plugin that exports a config schema gets a generated form; values are written to the profile's `plugin-config.json` and mirrored, along with the switched-off state, into a marked block in `cordis.patch.yml`. |
 | **Performance badge** | A small always-on-top window, toggled from the menu, showing what the harness is costing right now: CPU, resident memory, threads and how many processes the group holds. The rate is a rate — `ps` reports CPU averaged over a process's whole life, which for a server that has been up since Tuesday is a number about the past, so this samples cumulative CPU time twice and divides by the wall clock between. The whole process group is counted, because dsh delegates to pnpm and to other CLIs and those are as much the cost as the parent. It samples only while it is on screen. |
 | **Plugin market** | Its own window (Plugins → Plugin Market…): the [DSH Market](https://dshplugin.market/) catalog, searchable, with stars and descriptions, one click to install. The catalog is cached locally (no network for six hours, refreshable by hand), so browsing works offline. One-click install is offered only for entries the market has verified and that ship on npm; a git-hosted entry gets a repository link and is installed by hand from the Installed tab. The source is the `marketCatalogUrl` setting — see [Data locations](#data-locations). |
 
@@ -251,6 +296,16 @@ The packaged application carries whatever `name` and icons the brand names. See 
 - Conversations need `DEEPSEEK_API_KEY`, set either in the `dsh` web UI settings or in the environment before launch.
 - macOS builds are ad-hoc signed and not notarized: the first launch needs approval under System Settings → Privacy & Security.
 - macOS protected folders (Documents, Desktop, Downloads, external volumes) are walled off from the app: a plugin installed from a local path inside one of them fails to read with `EPERM`. The plugin manager appends what to do about it. The grant is bound to the code signature, and an ad-hoc signature changes with every reinstall, so it has to be given again after an update; installing from a zip puts the plugin in the app data directory and sidesteps the whole layer.
+
+## Related projects
+
+| Project | What it is |
+| --- | --- |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | The runtime this app installs, updates and runs — `dsh` itself |
+| [dsh-plugins](https://github.com/huyang218/dsh-plugins) | A plugin monorepo for `dsh`: capabilities the model can call, runtime wrappers around the harness, and web client extensions. Install any of them from Plugins → Manage Plugins…, by npm name or by a link to one package |
+| [dsh-android](https://github.com/huyang218/dsh-android) | The same idea on a phone: an Android app that runs the dsh host and client on the device itself, with no server and no computer kept running. Early — a sideloaded apk |
+
+dsh-plugins and dsh-android come from the same author as this app. Like this one, both are unofficial and unaffiliated with DeepSeek.
 
 ## Contributing
 

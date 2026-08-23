@@ -2,6 +2,7 @@
 
 [English](README.md) | 简体中文
 
+[![Release](https://img.shields.io/github/v/release/huyang218/dsh-desktop?label=release)](https://github.com/huyang218/dsh-desktop/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey.svg)](#平台支持)
 
@@ -12,6 +13,50 @@
 > 源码树。
 
 仓库名为 `dsh-desktop`,打包出的应用名为 **DeepSeek Harness**(见[商标](#商标))。
+
+兄弟项目:[dsh-android](https://github.com/huyang218/dsh-android) 把同一套运行时装进手机;[dsh-plugins](https://github.com/huyang218/dsh-plugins) 是一批可以直接用这里的插件管理器装进来的插件。见[相关项目](#相关项目)。
+
+<p align="center">
+  <img src="docs/images/zh/main.png" alt="装进桌面窗口的 dsh Web UI" width="820">
+</p>
+
+## 下载
+
+安装包挂在每个 [release](https://github.com/huyang218/dsh-desktop/releases/latest) 下。目标机器不需要预装任何东西——安装包自带 Node 运行时,`dsh` 在首次启动时装。
+
+| 平台 | 文件 |
+|---|---|
+| **macOS**(Apple Silicon) | `DeepSeek Harness-<版本>-arm64.dmg` |
+| **macOS**(Intel) | `DeepSeek Harness-<版本>-x64.dmg` |
+| **Windows** 10(1803+)/ 11 | `DeepSeek Harness Setup <版本>.exe` |
+
+macOS 构建为 ad-hoc 签名、未公证,首次启动需在「系统设置 → 隐私与安全性」里放行。对话需要 DeepSeek API Key,首次启动时在 Web UI 里填。
+
+## 长什么样
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/images/zh/plugin-market.png" alt="插件市场窗口,列出 DSH Market 条目、星标与一键安装">
+<br><b>插件市场</b> — DSH Market 的目录收进窗口,可搜索,本地缓存可离线浏览,已验证的条目一键安装。
+</td>
+<td width="50%" valign="top">
+<img src="docs/images/zh/plugins.png" alt="插件管理:已装插件的更新、停用、设置与卸载">
+<br><b>插件管理</b> — 用 npm 包名、GitHub 链接、本地路径或 zip 安装;已装的可更新、停用、配置、卸载。
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/images/zh/proxy.png" alt="一处代理设置,同时覆盖两条网络">
+<br><b>一处代理,两条网络</b> — 窗口自身的请求走 Chromium,npm、pnpm 和 <code>dsh</code> 服务走环境变量。设一次,两条都配上,分开测。
+</td>
+<td width="50%" valign="top">
+<img src="docs/images/zh/hud.png" alt="性能浮标:CPU、内存、线程与进程数" width="300">
+<br><img src="docs/images/hud-capybara.png" alt="浮标的形象样式之一" width="360">
+<br><b>性能浮标</b> — 此刻这套东西正在花多少资源,整个进程组一起算。CPU 是真实速率,不是 <code>ps</code> 报的那个生命周期平均值。
+</td>
+</tr>
+</table>
 
 ## 为什么需要它
 
@@ -32,7 +77,7 @@
 | **存储** | `DSH_HOME` 指向应用数据目录内部,profiles、会话与设置全部归应用管理。菜单可直接打开数据目录与日志,也可导出数据快照与从快照恢复——运行时能双槽回退、外壳能热更新回退、插件能停用,唯独会话没有退路,快照就是那条退路。恢复前会先校验压缩包确实是数据目录的快照,被替换的目录改名保留而不是删除。 |
 | **代理设置** | 应用有两条互不相干的网络:窗口自身的请求走 Chromium,而 npm(装运行时)、pnpm(装插件)、以及真正调用模型 API 的 `dsh` 服务进程读的是环境变量。GUI 应用从启动台打开时两者都拿不到——终端里 `export` 的代理它看不见,系统代理开关又常常是关的。菜单「设置 → 代理…」一次配好两条,并能分别测通。 |
 | **内置工具链** | 打包版自带 Node 运行时,目标机器无需预装任何东西。源码运行时回退为在本机查找 Node ≥ 22(PATH、nvm、Homebrew、`%ProgramFiles%`),这也顺带绕开了 GUI 应用不继承 shell `PATH` 的问题。这个继承问题的影响面更广:`dsh` 要在 `PATH` 上找装插件用的 pnpm,以及可委派的 Claude Code 与 Codex CLI,而 macOS 上双击启动的应用拿到的只有 `/usr/bin:/bin:/usr/sbin:/sbin`。所以每次运行会问一次用户自己的 shell 它的 `PATH` 是什么——这覆盖的是用户实际在用的版本管理器和安装位置,而不是我们想得到的那几种——再把答案追加进去;万一 shell 问不到,后面还垫着常见的包管理器目录。 |
-| **插件管理** | 在窗口里安装、更新、卸载 `dsh` 插件:npm 包名、GitHub 网页链接(含插件集合仓库里指向某个子包的 `…/tree/main/packages/xxx` 链接)、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。已装插件会在后台按 npm 配置的注册表(尊重镜像)查一次新版本,有则标出。插件可随时停用/启用而不必卸载——停用写的是 loader 条目上的 `disabled: true`(运行时自带的机制),而不是 profile 的 bundle 列表,因为那个列表会被 `dsh plugin` 每次操作时按已安装状态重新对账。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并与停用状态一起镜像进 `cordis.patch.yml` 中带标记的托管块。 |
+| **插件管理** | 在窗口里安装、更新、卸载 `dsh` 插件:npm 包名、GitHub 网页链接(含插件集合仓库里指向某个子包的 `…/tree/main/packages/xxx` 链接,例如 [dsh-plugins](https://github.com/huyang218/dsh-plugins))、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。已装插件会在后台按 npm 配置的注册表(尊重镜像)查一次新版本,有则标出。插件可随时停用/启用而不必卸载——停用写的是 loader 条目上的 `disabled: true`(运行时自带的机制),而不是 profile 的 bundle 列表,因为那个列表会被 `dsh plugin` 每次操作时按已安装状态重新对账。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并与停用状态一起镜像进 `cordis.patch.yml` 中带标记的托管块。 |
 | **性能浮标** | 菜单里开关的小号置顶窗口,显示此刻 harness 的开销:CPU、常驻内存、线程数,以及进程组里有几个进程。速率是真的速率——`ps` 的 CPU 是进程生命周期的平均值,对一个从周二起就没退出的服务来说那是关于过去的数字,所以这里采两次累计 CPU 时间除以两次之间的墙上时间。按整个进程组统计,因为 dsh 会调 pnpm、会委托别的 CLI,那些同样是开销。只在显示时采样。 |
 | **插件市场** | 独立窗口(菜单「插件 → 插件市场…」):读取 [DSH Market](https://dshplugin.market/) 的目录,可搜索、看星标与描述,一键安装。目录在本地缓存(6 小时内不再联网,可手动刷新),离线也能浏览。只有市场已核验、且从 npm 分发的条目提供一键安装;git 来源的条目只给出仓库链接,需要自行在「已安装」页手动安装。换源见[数据位置](#数据位置)中的 `marketCatalogUrl`。 |
 
@@ -250,6 +295,16 @@ Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*
 - 对话依赖 `DEEPSEEK_API_KEY`,可在 `dsh` Web UI 的设置中配置,或在启动前导出到环境变量。
 - macOS 构建为 ad-hoc 签名且未公证:首次打开需在「系统设置 → 隐私与安全性」中放行。
 - macOS 的受保护目录(文稿、桌面、下载、外置卷)对本应用是隔离的:插件若以本地路径安装在这些位置,读取时会得到 `EPERM`。插件管理器会在报错后附上处置步骤。授权是绑定代码签名的,而 ad-hoc 签名每次重装都会变,所以更新应用后需要重新授权;用 zip 安装可以把插件放进应用数据目录,完全避开这一层。
+
+## 相关项目
+
+| 项目 | 是什么 |
+| --- | --- |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 本应用负责安装、更新与运行的那个运行时,也就是 `dsh` 本身 |
+| [dsh-plugins](https://github.com/huyang218/dsh-plugins) | `dsh` 的插件仓库:模型可调用的能力、围绕 harness 的运行时包装,以及 Web 客户端扩展。在「插件 → 插件管理…」里按 npm 包名或指向某个子包的链接即可装入 |
+| [dsh-android](https://github.com/huyang218/dsh-android) | 同一件事在手机上的版本:一个 Android 应用,把 dsh 的 host 与 client 都跑在设备本身,不连服务器,也不需要另一台开着的电脑。尚早——旁加载 apk |
+
+dsh-plugins 与 dsh-android 与本应用出自同一作者;和本项目一样,都是非官方项目,与 DeepSeek 无隶属关系。
 
 ## 参与贡献
 
