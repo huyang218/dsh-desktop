@@ -978,12 +978,40 @@ async function testProxy(setting) {
  *
  * A hidden main window counts as no main window. This app is tray-resident
  * and can start without one at all, and opening the plugin manager from the
- * tray then would hold a window nobody can see and offer no way to find out
- * why the app stopped responding to it.
+ * tray then would hold a window nobody can see.
+ *
+ * Owned but not modal. Modal put these in front and held the window behind
+ * them, which was the point — but it also had the system swallow every click
+ * outside, so clicking away did nothing at all and the only way out was the
+ * one small button in the title bar. Ownership alone keeps them in front;
+ * dismissOnOutsideFocus() closes them when the user turns back to the window
+ * they came from, which is what clicking away was trying to say.
  */
 function ownedByMainWindow() {
   const parent = state.window
-  return parent && !parent.isDestroyed() && parent.isVisible() ? { parent, modal: true } : {}
+  return parent && !parent.isDestroyed() && parent.isVisible() ? { parent } : {}
+}
+
+/**
+ * Closes a manager window when the user goes back to another of ours.
+ *
+ * Focus moving to a different window of this application is the signal, not
+ * the window merely losing focus: switching to a browser to read a plugin's
+ * repository, or to a terminal, should leave the manager where it was. Only
+ * turning back to the app itself means "done here".
+ *
+ * @param {BrowserWindow} win
+ */
+function dismissOnOutsideFocus(win) {
+  const onFocus = focused => {
+    if (win.isDestroyed() || focused === win) return
+    // The badge is always on top and takes focus when clicked; closing a
+    // manager because somebody glanced at a readout would be its own bug.
+    if (focused === state.hud) return
+    win.close()
+  }
+  app.on('browser-window-focus', (_event, focused) => onFocus(focused))
+  win.on('closed', () => app.removeListener('browser-window-focus', onFocus))
 }
 
 function openSettingsWindow() {
@@ -1002,6 +1030,7 @@ function openSettingsWindow() {
   })
   if (process.platform !== 'darwin') win.removeMenu()
   win.loadFile(path.join(assets, 'settings.html'))
+  dismissOnOutsideFocus(win)
   win.on('closed', () => { state.settingsWindow = undefined })
   state.settingsWindow = win
 }
@@ -1362,6 +1391,7 @@ function openPluginWindow(mode) {
   // The mode is in the URL rather than a message sent after load, so the
   // first painted frame is already the right window.
   win.loadFile(path.join(assets, 'plugins.html'), { search: `mode=${mode}` })
+  dismissOnOutsideFocus(win)
   win.on('closed', () => { delete state.pluginWindows[mode] })
   state.pluginWindows[mode] = win
 }
@@ -1616,6 +1646,7 @@ function openSkillsWindow() {
   })
   if (process.platform !== 'darwin') win.removeMenu()
   win.loadFile(path.join(assets, 'skills.html'))
+  dismissOnOutsideFocus(win)
   win.on('closed', () => { state.skillsWindow = null })
   state.skillsWindow = win
 }
@@ -2358,6 +2389,17 @@ function buildMenu() {
     { label: t('menu.plugins'), submenu: pluginItems() },
     { label: t('menu.skills'), submenu: skillItems() },
     { label: t('menu.edit'), submenu: editItems() },
+    // Spelled out rather than `role: 'windowMenu'`, whose contents the system
+    // fills in and which therefore cannot be checked from here. Close is the
+    // item that matters: without it there is no Cmd+W, and a window offering
+    // nothing but the title-bar button is one people report as unclosable.
+    {
+      label: t('menu.window'),
+      submenu: [
+        { role: 'close', label: t('menu.closeWindow') },
+        { role: 'minimize', label: t('menu.minimize') },
+      ],
+    },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
