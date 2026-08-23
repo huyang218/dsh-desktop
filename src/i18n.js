@@ -273,6 +273,9 @@ const MESSAGES = {
 
 
     // Performance badge
+    'menu.window': '窗口',
+    'menu.closeWindow': '关闭窗口',
+    'menu.minimize': '最小化',
     'menu.hud': '性能浮标',
     'menu.hudShow': '显示浮标',
     'hud.style.assistant': '助手',
@@ -646,6 +649,9 @@ const MESSAGES = {
     'settings.detected': 'Found a proxy in the environment: {url} (filled in; choose Manual to use it)',
 
 
+    'menu.window': 'Window',
+    'menu.closeWindow': 'Close Window',
+    'menu.minimize': 'Minimize',
     'menu.hud': 'Performance badge',
     'menu.hudShow': 'Show the badge',
     'hud.style.assistant': 'Assistant',
