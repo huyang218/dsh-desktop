@@ -10,6 +10,8 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('dshHud', {
   /** Receives each reading: { cpu, rssBytes, threads, processes, running }. */
   onSample: callback => ipcRenderer.on('hud:sample', (_event, reading) => callback(reading)),
+  /** Asks for a window wide enough for the contents just rendered. */
+  resize: width => ipcRenderer.send('hud:resize', width),
   /** Closes the badge, which also stops the sampling behind it. */
   close: () => ipcRenderer.send('hud:close'),
   /** The active language and its messages, in time for the first frame. */

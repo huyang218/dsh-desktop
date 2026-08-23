@@ -18,7 +18,7 @@ import {
 import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { copyFile, mkdir, readdir, readFile, rm } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { cpus, homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { childEnv, ensureBundledToolchain, findToolchain } from './toolchain.js'
@@ -1772,6 +1772,15 @@ const HUD_INTERVAL_MS = process.platform === 'win32' ? 2000 : 1000
 /** Below this two readings are the clock's resolution, not the process's work. */
 const MIN_HUD_SAMPLE_MS = 400
 /**
+ * How far past its style's width the badge may grow to fit its contents.
+ *
+ * A style's width is a starting point, not a promise: CPU is reported per
+ * core, so it runs from one digit to four, and a badge that clipped the
+ * number would be misreporting at exactly the moment the number matters. The
+ * cap is here so a bad measurement cannot put a window across the screen.
+ */
+const HUD_MAX_GROWTH = 180
+/**
  * The layouts the badge comes in, and what each needs to hold its contents.
  *
  * A size per style rather than one window that reflows: the badge is docked
@@ -1911,12 +1920,37 @@ function hudStatus() {
 }
 
 /**
- * CPU tiers for the character state. Thread count is displayed but is not a
- * load signal: a runtime can own many sleeping threads and still be idle.
+ * CPU tiers for the character state, in the same per-core percent the badge
+ * displays and Activity Monitor reports — so one core fully used is 100.
+ *
+ * Read them as cores: something is happening at a sixth of a core, a core is
+ * working at ninety percent of one, and it is genuinely parallel — a build, a
+ * plugin install, a runtime download — at two and a half. Expressed this way
+ * they mean the same thing on any machine.
+ *
+ * The earlier 10/35/70 were per-core too, which put all three tiers inside a
+ * single core: on the fourteen-core machine this was written on, "hot" meant
+ * dsh was using five percent of the computer, and the top tier fired at
+ * something a person would call idle.
+ *
+ * Thread count is displayed but is not a load signal: a runtime can own a
+ * dozen sleeping threads and be doing nothing at all.
  */
-const HUD_ACTIVE_PERCENT = 10
-const HUD_BUSY_PERCENT = 35
-const HUD_HOT_PERCENT = 70
+/**
+ * Logical cores, for turning a per-core reading into a share of the machine.
+ *
+ * `ps` counts one fully used core as 100, so on this fourteen-core machine a
+ * parallel build reads 800 and a runaway one could read 1400. That is the
+ * right unit for deciding how hard the harness is working and the wrong one
+ * to put on a badge: a four-digit percentage is not something anybody reads
+ * at a glance, and it does not answer the question people actually ask, which
+ * is how much of their computer this is taking.
+ */
+const CORES = Math.max(1, cpus().length)
+
+const HUD_ACTIVE_PERCENT = 15
+const HUD_BUSY_PERCENT = 90
+const HUD_HOT_PERCENT = 250
 
 /**
  * Converts first-hand process and shell state into the five states the badge
@@ -1960,13 +1994,18 @@ async function sampleForHud() {
   // broken by the act of using it.
   const cpu = tooSoon ? state.hudCpu : cpuPercent(previous, reading)
   state.hudCpu = cpu
+  // Two units, deliberately. The tiers stay per-core, where a threshold means
+  // "about a core" on every machine; the badge shows the share of the whole
+  // computer, which is bounded at 100 and is the question a person is asking
+  // when they glance at it.
+  const share = cpu === undefined ? undefined : cpu / CORES
   const status = hudStatus()
   const load = hudLoad(reading !== undefined, cpu, status)
   state.hud.webContents.send('hud:sample', reading === undefined
     ? { running: false, status, load }
     : {
       running: true,
-      cpu,
+      cpu: share,
       rssBytes: reading.rssBytes,
       threads: reading.threads,
       processes: reading.processes,
@@ -2424,6 +2463,20 @@ async function main() {
   registerSkillIpc()
   registerUiStateIpc()
   ipcMain.on('hud:close', () => closeHud())
+  // The badge measures what it rendered and asks for the room to show it.
+  // The right edge is held so a wider badge grows leftwards, away from the
+  // screen edge it is docked against rather than off it.
+  ipcMain.on('hud:resize', (_event, width) => {
+    if (!hudOpen()) return
+    const base = HUD_STYLES[hudStyle()]?.width ?? 232
+    const wanted = Math.round(Number(width))
+    if (!Number.isFinite(wanted)) return
+    const next = Math.min(Math.max(wanted, base), base + HUD_MAX_GROWTH)
+    const bounds = state.hud.getBounds()
+    if (Math.abs(bounds.width - next) < 4) return
+    state.hud.setBounds({ x: bounds.x + bounds.width - next, y: bounds.y, width: next, height: bounds.height })
+    writeSettings({ hudBounds: state.hud.getBounds() })
+  })
   registerSettingsIpc()
   registerFileHandoff()
   // Before the first child is spawned and before anything is fetched: the
