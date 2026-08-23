@@ -52,7 +52,10 @@
   .value {
     font: 600 15px/1.15 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-variant-numeric: tabular-nums;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    /* Not truncated. A badge exists to be read at a glance, and an ellipsis
+       turns 1284% into 128… — a number that is wrong rather than shortened.
+       The window is sized to its contents instead; see reportWidth(). */
+    white-space: nowrap;
   }
   .value .unit { font-size: 10px; font-weight: 500; color: #8a8a96; margin-left: 1px; }
   .label { font-size: 10px; color: #7a7a86; white-space: nowrap; }
@@ -436,6 +439,28 @@
     $('say').textContent = $('title').textContent
   }
 
+  /**
+   * Asks for a window wide enough to hold what was just rendered.
+   *
+   * CPU is per core, so it runs from one digit to four, and memory from two
+   * to four — a badge sized for the common case clips exactly when the
+   * numbers become worth reading. Measuring after each render and resizing
+   * costs nothing at this cadence, and the main process clamps the result.
+   */
+  let lastWidth = 0
+  function reportWidth() {
+    if (typeof dshHud.resize !== 'function') return
+    // The body is the only thing that grows; its scrollWidth is what the
+    // contents actually need, whatever the window currently is.
+    const needed = Math.ceil(document.body.scrollWidth)
+    // A couple of pixels of jitter is the numbers changing shape, not the
+    // layout needing more room; resizing on every one of those would make the
+    // badge twitch once a second.
+    if (Math.abs(needed - lastWidth) < 4) return
+    lastWidth = needed
+    dshHud.resize(needed)
+  }
+
   dshHud.onSample(reading => {
     showStatus(reading.status, reading.load)
     if (!reading.running) {
@@ -451,6 +476,8 @@
     put('mem', ...bytes(reading.rssBytes))
     put('threads', String(reading.threads || '—'))
     put('procs', String(reading.processes || '—'))
+    // After the values are in, so the measurement is of what is on screen.
+    requestAnimationFrame(reportWidth)
   })
 </script>
 </body>
