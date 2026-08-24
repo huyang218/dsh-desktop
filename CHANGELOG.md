@@ -5,6 +5,17 @@ Every released version, and what it changed. The notes attached to a
 section for that version, taken from this file by `scripts/release-notes.mjs`
 — so a release with nothing written here ships with nothing to read.
 
+## 0.1.14 — 2026-08-24
+
+- Run the source from an app that says its own name
+- Say what a request answered, in the list
+- Give the agent a browser inside the app
+- Show the app, and say what changed
+- Point the README at the plugins and the phone
+- Let the managers be dismissed by clicking away
+- Show a number that fits, and a tier that means something
+- Carry the interface's own storage across a change of port
+
 ## 0.1.13 — 2026-08-23
 
 - Keep the server's port, and with it the user's open workspace
