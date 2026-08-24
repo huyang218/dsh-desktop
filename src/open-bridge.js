@@ -165,6 +165,8 @@ export function writeOpenCommand({ binDir, nodeBin, srcDir }) {
     'dsh-browser-mcp': stub(binDir, nodeBin, 'dsh-browser-mcp', 'browser-mcp.mjs'),
     'dsh-miniapp': stub(binDir, nodeBin, 'dsh-miniapp', 'miniapp-cli.mjs'),
     'dsh-miniapp-mcp': stub(binDir, nodeBin, 'dsh-miniapp-mcp', 'miniapp-mcp.mjs'),
+    'dsh-phone': stub(binDir, nodeBin, 'dsh-phone', 'phone-cli.mjs'),
+    'dsh-phone-mcp': stub(binDir, nodeBin, 'dsh-phone-mcp', 'phone-mcp.mjs'),
   }
 }
 
@@ -187,6 +189,9 @@ const COPIED = [
   'miniapp-ops.js',
   'miniapp-cli.mjs',
   'miniapp-mcp.mjs',
+  'phone-ops.js',
+  'phone-cli.mjs',
+  'phone-mcp.mjs',
 ]
 
 /** One command: a stub that runs the bundled Node against one of the copies. */

@@ -63,6 +63,8 @@ import {
 import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
 import { registerMcpTools } from './mcp-register.js'
 import { createEngine } from './miniapp-engine.js'
+import { createEngine as createPhoneEngine } from './phone-engine.js'
+import { inspectPhones } from './phone-tool.js'
 import { deployBundledSkills } from './bundled-skills.js'
 import { isSourceLaunch } from './source-launch.js'
 
@@ -1759,6 +1761,7 @@ async function registerTools(commands) {
   const servers = [
     { name: 'browser', setting: 'browserTools', stub: commands['dsh-browser-mcp'] },
     { name: 'miniapp', setting: 'miniappTools', stub: commands['dsh-miniapp-mcp'] },
+    { name: 'phone', setting: 'phoneTools', stub: commands['dsh-phone-mcp'] },
   ]
   for (const { name, setting, stub } of servers) {
     const wanted = settings[setting] !== false
@@ -1790,8 +1793,10 @@ function toggleBrowserPanel() {
   showWindow()
 }
 
-/** Verbs bound for the simulator rather than the browser. */
+/** Verbs bound for the mini program simulator rather than the browser. */
 const MINIAPP_PREFIX = 'miniapp.'
+/** Verbs bound for the phone. */
+const PHONE_PREFIX = 'phone.'
 
 /**
  * The simulator engine, made when something first asks for it.
@@ -1803,6 +1808,12 @@ const MINIAPP_PREFIX = 'miniapp.'
 function miniapp() {
   state.miniapp ??= createEngine({ log })
   return state.miniapp
+}
+
+/** The phone engine, on the same terms. */
+function phone() {
+  state.phone ??= createPhoneEngine({ log })
+  return state.phone
 }
 
 /**
@@ -1830,6 +1841,62 @@ async function toggleSimulator() {
   const result = await engine.run('open', { project: directory }, process.cwd())
   buildMenu()
   if (!result.ok) errorDialog(t('dialog.miniappFailed'), new Error(result.why))
+}
+
+/**
+ * Starts a phone, or lets go of the one that is running.
+ *
+ * The choosing is done here rather than in the engine because it is a
+ * conversation: which device, and — when there is no device to choose — what
+ * would have to be downloaded first. The engine answers questions; a dialog
+ * is what asks one.
+ */
+async function togglePhone() {
+  const engine = phone()
+  if (engine.isOpen()) {
+    const result = await engine.run('close', {}, process.cwd())
+    buildMenu()
+    if (!result.ok) errorDialog(t('menu.phone'), new Error(result.why))
+    return
+  }
+
+  const seen = inspectPhones()
+  if (seen.android === 'ready') {
+    const result = await engine.run('open', {}, process.cwd())
+    buildMenu()
+    if (!result.ok) errorDialog(t('dialog.phoneFailed'), new Error(result.why))
+    return
+  }
+  if (seen.android !== 'stopped') {
+    // Nothing to start. Which of the three reasons it is decides what the
+    // offer should be, so the reason is what gets shown rather than a blanket
+    // "unavailable" — see the ladder in phone-tool.js.
+    await dialog.showMessageBox(state.window, {
+      type: 'info',
+      message: t('menu.phone'),
+      detail: t(`dialog.phone.${seen.android}`),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+
+  const avds = seen.sdk?.avds ?? []
+  let chosen = avds[0]
+  if (avds.length > 1) {
+    // Buttons rather than a list window: a handful of names is what this is,
+    // and a whole window for four buttons is a window to dismiss.
+    const picked = await dialog.showMessageBox(state.window, {
+      type: 'question',
+      message: t('dialog.phonePick'),
+      buttons: [...avds.slice(0, 6), t('button.cancel')],
+      cancelId: Math.min(avds.length, 6),
+    })
+    if (picked.response >= Math.min(avds.length, 6)) return
+    chosen = avds[picked.response]
+  }
+  const result = await engine.run('open', { avd: chosen }, process.cwd())
+  buildMenu()
+  if (!result.ok) errorDialog(t('dialog.phoneFailed'), new Error(result.why))
 }
 
 /** The remembered panel width, or a sensible one. */
@@ -2586,13 +2653,15 @@ async function startOpenBridge() {
         // `navigate` and half the rest would each mean two things.
         const result = op.startsWith(MINIAPP_PREFIX)
           ? await miniapp().run(op.slice(MINIAPP_PREFIX.length), params, cwd)
-          : await runBrowserOp(op, params)
+          : op.startsWith(PHONE_PREFIX)
+            ? await phone().run(op.slice(PHONE_PREFIX.length), params, cwd)
+            : await runBrowserOp(op, params)
         // One line per call, and the answer is not in it: a snapshot is
         // hundreds of elements and the log is for support, not for a
         // transcript of everything the agent looked at.
         log(`${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
         // Opening or closing a simulator changes what the menu should say.
-        if (op === `${MINIAPP_PREFIX}open` || op === `${MINIAPP_PREFIX}close`) buildMenu()
+        if (/\.(open|close)$/.test(op)) buildMenu()
         return result
       },
       log,
@@ -3844,6 +3913,10 @@ function deviceItems() {
       label: `${state.miniapp?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.miniapp')}`,
       click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
     },
+    {
+      label: `${state.phone?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.phone')}`,
+      click: () => { togglePhone().catch(error => errorDialog(t('menu.phone'), error)) },
+    },
   ]
 }
 
@@ -4301,6 +4374,8 @@ if (!locked) {
     // one it merely borrowed is left exactly as it was found.
     state.miniapp?.dispose()
     state.miniapp = undefined
+    state.phone?.dispose()
+    state.phone = undefined
     if (state.child) {
       event.preventDefault()
       log('stopping dsh server')

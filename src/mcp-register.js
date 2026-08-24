@@ -41,6 +41,7 @@ const markersFor = name => ({
 const SERVERS = {
   browser: "The desktop app's browser panel, as agent tools (mcp__browser__*).",
   miniapp: "The desktop app's mini program simulator, as agent tools (mcp__miniapp__*).",
+  phone: "The desktop app's phone simulator, as agent tools (mcp__phone__*).",
 }
 
 /** The MCP namespace the model sees in a server's tool names. */
