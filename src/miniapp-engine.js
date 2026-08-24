@@ -33,12 +33,14 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { launch, ready } from './miniapp-connection.js'
 import { readProject } from './miniapp-project.js'
-import { DEFAULT_TEXT_MAX, DEFAULT_WAIT_MS } from './miniapp-ops.js'
+import { DEFAULT_TEXT_MAX, DEFAULT_WAIT_MS, logLine } from './miniapp-ops.js'
 import { findDevTools, quitDevTools } from './miniapp-tool.js'
 import { addressable, scan } from './miniapp-wxml.js'
 
 /** How many log entries are kept for `console` to return. */
 const LOG_LIMIT = 500
+/** How close together two identical lines have to be to be one line twice. */
+const DEDUPE_MS = 1_000
 
 /**
  * Creates the engine.
@@ -81,7 +83,7 @@ export function createEngine({ log } = {}) {
       refs = new Map()
       session = await launch({ tool, projectPath: found.dir, trust: true, pure, log })
       project = found
-      watchLogs(session)
+      await watchLogs(session)
       await ready(session)
       return { ok: true, project: found.name, appid: found.appid, ...await where() }
     },
@@ -237,9 +239,42 @@ export function createEngine({ log } = {}) {
     },
   }
 
-  /** @param {import('./miniapp-connection.js').Session} open */
-  function watchLogs(open) {
+  /**
+   * Starts collecting what the app says about itself.
+   *
+   * The log has to be switched on. A simulator reports thrown exceptions to
+   * anyone listening but stays quiet about `console.log` until asked, so a
+   * session that never asks sees an app that never logs — and `console` is
+   * the verb an agent reaches for precisely when something did nothing, which
+   * is the worst moment to hand back an empty list.
+   *
+   * @param {import('./miniapp-connection.js').Session} open
+   */
+  async function watchLogs(open) {
+    // The simulator delivers every line twice — measured on the wire, both
+    // copies identical, with nothing in either to say which channel it came
+    // from. So the duplicate is dropped here, on the only evidence available:
+    // the same level and the same text, arriving within a moment of each
+    // other.
+    //
+    // The trade is stated rather than hidden. An app that really does log one
+    // line twice inside {@link DEDUPE_MS} loses the second, and an agent
+    // reading a doubled log is worse off than one missing a repeat: the
+    // doubling is in every line and makes the whole log untrustworthy, while
+    // the loss is rare and costs one line.
+    /** @type {Map<string, number>} */
+    const lately = new Map()
     const keep = entry => {
+      const now = Date.now()
+      const fingerprint = `${entry.level}\u0000${logLine(entry)}`
+      const before = lately.get(fingerprint)
+      if (before !== undefined && now - before < DEDUPE_MS) return
+      lately.set(fingerprint, now)
+      if (lately.size > LOG_LIMIT) {
+        for (const [key, at] of lately) {
+          if (now - at >= DEDUPE_MS) lately.delete(key)
+        }
+      }
       logs.push(entry)
       if (logs.length > LOG_LIMIT) logs = logs.slice(-LOG_LIMIT)
     }
@@ -248,6 +283,16 @@ export function createEngine({ log } = {}) {
       level: 'error',
       message: params?.message ?? params?.stack ?? JSON.stringify(params),
     }))
+    // Subscribed first, switched on second, and that order is load-bearing:
+    // reversed, every line arrives twice. Why is not known — the obvious
+    // explanation, that switching it on replays a buffer into a listener
+    // already in place, predicts the duplicates on this order rather than the
+    // other one, so it is wrong. What is known is which order was measured
+    // quiet, and this is it.
+    //
+    // Best effort otherwise: an older DevTools without the call is a session
+    // with fewer logs, not a session that failed to open.
+    await open.send('App.enableLog').catch(() => {})
   }
 
   /** Where the simulator is, in the two words every answer repeats. */

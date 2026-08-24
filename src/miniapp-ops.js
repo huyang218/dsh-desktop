@@ -194,16 +194,29 @@ export function mcpTools() {
  * where it came from, then the message. A model reading this is looking for
  * the line that explains why nothing happened, so the level goes first.
  *
+ * An argument that arrives as an empty object usually was not one. The
+ * DevTools serialises what was logged before sending it, and an Error becomes
+ * `{}` on the way — `console.error(new Error('...'))`, the most common way an
+ * app reports a failure, arrives carrying nothing. That is a loss on their
+ * side and cannot be recovered here, so it is named rather than printed: a
+ * bare `{}` in a log reads as a bug in whoever printed it.
+ *
  * @param {{level?: string, args?: any[], message?: string, route?: string}} entry
  * @returns {string}
  */
 export function logLine(entry) {
   const level = (entry.level ?? 'log').padEnd(5)
   const where = entry.route ? ` ${entry.route}` : ''
-  const text = entry.message ?? (entry.args ?? [])
-    .map(value => (typeof value === 'string' ? value : JSON.stringify(value)))
-    .join(' ')
+  const text = entry.message ?? (entry.args ?? []).map(argument).join(' ')
   return `${level}${where} ${text}`.trimEnd()
+}
+
+/** @param {unknown} value @returns {string} */
+function argument(value) {
+  if (typeof value === 'string') return value
+  const json = JSON.stringify(value)
+  if (json === undefined) return String(value)
+  return json === '{}' ? '[object — the DevTools sent no detail, an Error logged this way arrives empty]' : json
 }
 
 /** What an empty log says, so silence is never mistaken for a missing feature. */
