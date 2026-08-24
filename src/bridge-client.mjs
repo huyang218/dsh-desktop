@@ -26,8 +26,15 @@ export function bridge() {
   }
 }
 
-/** The message every entry point prints when it is running outside the app. */
-export const NO_BRIDGE = 'no browser available (not running under the desktop app)'
+/**
+ * The message every entry point prints when it is running outside the app.
+ *
+ * Names the situation rather than one of the things unavailable in it. These
+ * commands are on the PATH of a process the desktop app started, so reaching
+ * this means the command was run from somewhere else — a plain terminal,
+ * usually — and what is missing is the app, not a browser or a simulator.
+ */
+export const NO_BRIDGE = 'not running under the desktop app, which is where this command\u2019s window lives'
 
 /**
  * Runs one verb.
