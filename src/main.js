@@ -61,7 +61,7 @@ import {
   textScript, waitScript,
 } from './browser-page.js'
 import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
-import { registerMcpTools } from './mcp-register.js'
+import { registerMcpTools, registerSkillLoader } from './mcp-register.js'
 import { createEngine } from './miniapp-engine.js'
 import { createEngine as createPhoneEngine } from './phone-engine.js'
 import { inspectPhones, verifyAndroid } from './phone-tool.js'
@@ -1774,6 +1774,12 @@ async function registerTools(commands) {
     { name: 'miniapp', setting: 'miniappTools', stub: commands['dsh-miniapp-mcp'] },
     { name: 'phone', setting: 'phoneTools', stub: commands['dsh-phone-mcp'] },
   ]
+  // The loader first: tool rows offer the surfaces, and this is what makes
+  // the skills describing them — and the user's own installed skills — load
+  // at all.
+  const loader = await registerSkillLoader({ patchPath })
+    .catch(error => `failed: ${error?.message ?? error}`)
+  if (loader !== 'unchanged') log(`skill loader ${loader}`)
   for (const { name, setting, stub } of servers) {
     const wanted = settings[setting] !== false
     const outcome = await registerMcpTools({

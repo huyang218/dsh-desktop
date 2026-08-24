@@ -20,6 +20,7 @@ section for that version, taken from this file by `scripts/release-notes.mjs`
 - Show the download happening, and let it be resumed
 - Let the user say where their tools already are
 - Reach the other phones, without picking one up uninvited
+- Ship the simulators' skills, and switch the loader on
 
 ## 0.1.14 — 2026-08-24
 

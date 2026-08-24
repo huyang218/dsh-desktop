@@ -100,3 +100,48 @@ function renderBlock(name, command) {
     markers.end,
   ].join('\n')
 }
+
+/**
+ * Switches the skill loader on, for every profile under this home.
+ *
+ * The web profile ships with `skill-filesystem` — the provider that reads
+ * skill roots, `DSH_BUNDLED_SKILL_DIR` among them — and `tool-skill`, the
+ * model-facing loader, both disabled. Nothing else enables them, which was
+ * discovered the hard way: the app deployed its bundled skills, set the
+ * environment, and every session saw zero skills, the shipped browser skill
+ * included. The deployment, the variable, and the files were all correct;
+ * the reader was off.
+ *
+ * Home level for the reason the tool rows are: skills the application ships
+ * belong to the application, not to one profile. This also turns on the
+ * loading of skills the user installs through the manager window, which
+ * lands them in `<dshHome>/skills` — a root the same provider owns.
+ *
+ * @param {object} options
+ * @param {string} options.patchPath the home-level cordis.patch.yml
+ * @param {boolean} [options.enabled] false removes the block
+ * @returns {Promise<'added'|'updated'|'removed'|'unchanged'>}
+ */
+export async function registerSkillLoader({ patchPath, enabled = true }) {
+  const markers = markersFor('skill-loader')
+  const before = await readFile(patchPath, 'utf8').catch(() => '')
+  const had = before.includes(markers.begin)
+  const block = enabled
+    ? [
+      markers.begin,
+      '# The skill loader, switched on: the web profile ships it disabled, and',
+      "# with it off the app's bundled skills and the user's installed ones are",
+      '# deployed but never read.',
+      '- id: skill-filesystem',
+      '  disabled: false',
+      '- id: tool-skill',
+      '  disabled: false',
+      markers.end,
+    ].join('\n')
+    : ''
+  if (had && enabled && before.includes(block)) return 'unchanged'
+  if (!had && !enabled) return 'unchanged'
+  await spliceManagedBlock(patchPath, block, markers)
+  if (!enabled) return 'removed'
+  return had ? 'updated' : 'added'
+}
