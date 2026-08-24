@@ -62,11 +62,15 @@ const BINARIES = {
  * sentence to say to the user and a different button to offer. So all three
  * are read here rather than left for a caller to discover by failing.
  *
- * @param {{env?: Record<string, string | undefined>, home?: string}} [options]
+ * @param {object} [options]
+ * @param {Record<string, string | undefined>} [options.env]
+ * @param {string} [options.home]
+ * @param {string} [options.managed] an SDK this app installed into its own
+ *   data directory; searched last, so a user's own SDK always wins
  * @returns {AndroidSdk | undefined}
  */
-export function findAndroid({ env = process.env, home = homedir() } = {}) {
-  for (const root of androidRoots({ env, home })) {
+export function findAndroid({ env = process.env, home = homedir(), managed } = {}) {
+  for (const root of androidRoots({ env, home, managed })) {
     if (!root || !existsSync(root)) continue
     const bin = {}
     for (const [name, parts] of Object.entries(BINARIES)) {
@@ -89,7 +93,7 @@ export function findAndroid({ env = process.env, home = homedir() } = {}) {
 }
 
 /** @returns {Generator<string | undefined>} */
-function* androidRoots({ env, home }) {
+function* androidRoots({ env, home, managed }) {
   for (const name of ANDROID_ENV) yield env[name]?.trim()
   if (isWindows) {
     if (env.LOCALAPPDATA) yield path.join(env.LOCALAPPDATA, 'Android', 'Sdk')
@@ -107,6 +111,10 @@ function* androidRoots({ env, home }) {
   // not outrank a real SDK in its usual place.
   const onPath = which(isWindows ? 'adb.exe' : 'adb')
   if (onPath) yield path.resolve(path.dirname(onPath), '..')
+  // Ours, if we ever installed one. Last of all: someone who has their own
+  // SDK has more in it than we would ever install, and a machine that has
+  // both should use theirs.
+  yield managed
 }
 
 /** @param {string} root @returns {string[]} */
@@ -244,11 +252,11 @@ function runtimeName(identifier) {
  * would leave the user holding a two-gigabyte download when what they needed
  * was one command.
  *
- * @param {{env?: Record<string, string | undefined>, home?: string}} [options]
+ * @param {{env?: Record<string, string | undefined>, home?: string, managed?: string}} [options]
  * @returns {PhoneInspection}
  */
-export function inspectPhones({ env = process.env, home = homedir() } = {}) {
-  const sdk = findAndroid({ env, home })
+export function inspectPhones({ env = process.env, home = homedir(), managed } = {}) {
+  const sdk = findAndroid({ env, home, managed })
   const ios = findIos()
   if (!sdk) return { android: 'missing', ios }
   if (sdk.running.length > 0) return { android: 'ready', sdk, ios }

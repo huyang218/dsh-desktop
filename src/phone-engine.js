@@ -46,9 +46,11 @@ const POLL_MS = 2_000
 /**
  * Creates the engine.
  *
- * @param {{log?: (line: string) => void}} [options]
+ * @param {object} [options]
+ * @param {(line: string) => void} [options.log]
+ * @param {string} [options.managed] an SDK this app installed for itself
  */
-export function createEngine({ log } = {}) {
+export function createEngine({ log, managed } = {}) {
   /** @type {{serial: string, ours: boolean, avd?: string} | undefined} */
   let device
   /** @type {{udid: string, name: string} | undefined} */
@@ -57,7 +59,7 @@ export function createEngine({ log } = {}) {
   let refs = new Map()
 
   const sdk = () => {
-    const found = findAndroid()
+    const found = findAndroid({ managed })
     if (!found) throw new Error('no Android SDK on this machine — nothing to run a phone with')
     return found
   }
@@ -75,7 +77,7 @@ export function createEngine({ log } = {}) {
 
   const verbs = {
     async status() {
-      const seen = inspectPhones()
+      const seen = inspectPhones({ managed })
       const answer = {
         ok: true,
         state: device ? 'open' : seen.android,
@@ -88,7 +90,7 @@ export function createEngine({ log } = {}) {
     },
 
     async devices() {
-      const seen = inspectPhones()
+      const seen = inspectPhones({ managed })
       const lines = []
       for (const avd of seen.sdk?.avds ?? []) lines.push(`android  ${avd}`)
       for (const entry of seen.ios?.devices ?? []) {
@@ -259,7 +261,7 @@ export function createEngine({ log } = {}) {
   async function waitForBoot(found) {
     const deadline = Date.now() + BOOT_TIMEOUT_MS
     while (Date.now() < deadline) {
-      const fresh = findAndroid()
+      const fresh = findAndroid({ managed })
       const serial = fresh?.running?.[0]
       if (serial) {
         // Present on the network is not the same as ready to be tapped: the

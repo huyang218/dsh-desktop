@@ -65,6 +65,9 @@ import { registerMcpTools } from './mcp-register.js'
 import { createEngine } from './miniapp-engine.js'
 import { createEngine as createPhoneEngine } from './phone-engine.js'
 import { inspectPhones } from './phone-tool.js'
+import {
+  acceptLicences, createAvd, hasJava, installPackages, installTools, LICENCE_URL, requiredPackages,
+} from './phone-install.js'
 import { deployBundledSkills } from './bundled-skills.js'
 import { isSourceLaunch } from './source-launch.js'
 
@@ -135,6 +138,10 @@ function initPaths() {
   // a few hundred entries rather than the multi-megabyte document they came
   // from. It is a cache: deleting it costs one refresh.
   paths.marketCache = path.join(userData, 'market-catalog.json')
+  // An Android SDK this app installed for someone who had none. In the data
+  // directory because it is ours to remove: a user who deletes this app
+  // should not be left with two gigabytes of somebody else's SDK.
+  paths.androidSdk = path.join(userData, 'android-sdk')
   // Hot-updated shells, and the installers downloaded for the updates that
   // cannot be hot.
   paths.shellDir = shellDirOf(locations.dataDir)
@@ -1797,6 +1804,8 @@ function toggleBrowserPanel() {
 const MINIAPP_PREFIX = 'miniapp.'
 /** Verbs bound for the phone. */
 const PHONE_PREFIX = 'phone.'
+/** What a virtual device this app creates is called. */
+const AVD_NAME = 'dsh-phone'
 
 /**
  * The simulator engine, made when something first asks for it.
@@ -1812,7 +1821,7 @@ function miniapp() {
 
 /** The phone engine, on the same terms. */
 function phone() {
-  state.phone ??= createPhoneEngine({ log })
+  state.phone ??= createPhoneEngine({ log, managed: paths.androidSdk })
   return state.phone
 }
 
@@ -1860,7 +1869,7 @@ async function togglePhone() {
     return
   }
 
-  const seen = inspectPhones()
+  const seen = inspectPhones({ managed: paths.androidSdk })
   if (seen.android === 'ready') {
     const result = await engine.run('open', {}, process.cwd())
     buildMenu()
@@ -1871,12 +1880,15 @@ async function togglePhone() {
     // Nothing to start. Which of the three reasons it is decides what the
     // offer should be, so the reason is what gets shown rather than a blanket
     // "unavailable" — see the ladder in phone-tool.js.
-    await dialog.showMessageBox(state.window, {
+    const asked = await dialog.showMessageBox(state.window, {
       type: 'info',
       message: t('menu.phone'),
       detail: t(`dialog.phone.${seen.android}`),
-      buttons: [t('button.ok')],
+      buttons: [t('button.install'), t('button.cancel')],
+      cancelId: 1,
+      defaultId: 0,
     })
+    if (asked.response === 0) await installAndroid(seen)
     return
   }
 
@@ -1897,6 +1909,84 @@ async function togglePhone() {
   const result = await engine.run('open', { avd: chosen }, process.cwd())
   buildMenu()
   if (!result.ok) errorDialog(t('dialog.phoneFailed'), new Error(result.why))
+}
+
+/**
+ * Downloads an Android SDK, with the user's agreement to Google's terms.
+ *
+ * The agreement is the reason this is a flow and not a button. `sdkmanager`
+ * will not install anything until its licences are accepted, it accepts them
+ * from stdin, and this app could therefore send a `y` and never mention it.
+ * That would make a contract between the user and Google into something that
+ * happened while they were looking elsewhere. So the terms are named, the
+ * size is named, the directory it lands in is named, and none of it starts
+ * until somebody has read that and pressed the button.
+ *
+ * Progress goes to the log rather than to a progress bar. This is minutes of
+ * downloading and unpacking, the menu says it is happening, and a modal
+ * progress window over a long job is a window the user cannot put away.
+ *
+ * @param {import('./phone-tool.js').PhoneInspection} seen
+ */
+async function installAndroid(seen) {
+  if (state.phoneInstalling) return
+  if (!await hasJava()) {
+    await dialog.showMessageBox(state.window, {
+      type: 'warning',
+      message: t('menu.phone'),
+      detail: t('dialog.phoneNoJava'),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+
+  // Into the user's own SDK when they have one — that is where their images
+  // already live and where they would install the missing one themselves —
+  // and into ours only when there is nothing to add to.
+  const sdkRoot = seen.sdk?.root ?? paths.androidSdk
+  const agreed = await dialog.showMessageBox(state.window, {
+    type: 'question',
+    message: t('dialog.phoneLicenceTitle'),
+    detail: t('dialog.phoneLicence', { url: LICENCE_URL, dir: sdkRoot }),
+    buttons: [t('button.agreeInstall'), t('button.cancel')],
+    cancelId: 1,
+    defaultId: 1,
+  })
+  if (agreed.response !== 0) return
+
+  state.phoneInstalling = true
+  buildMenu()
+  try {
+    if (!seen.sdk) {
+      let announced = 0
+      await installTools({
+        sdkRoot,
+        onProgress: (received, total) => {
+          // Every tenth, not every chunk: this is a hundred and fifty
+          // megabytes and the log is not a progress bar.
+          const done = total ? Math.floor((received / total) * 10) : 0
+          if (done > announced) { announced = done; log(`android sdk: downloading ${done * 10}%`) }
+        },
+      })
+    }
+    await acceptLicences({ sdkRoot, accepted: true, onLine: line => log(`android sdk: ${line}`) })
+    if (seen.android !== 'noDevice') {
+      await installPackages({ sdkRoot, packages: requiredPackages(), onLine: line => log(`android sdk: ${line}`) })
+    }
+    await createAvd({ sdkRoot, name: AVD_NAME, onLine: line => log(`android sdk: ${line}`) })
+    log('android sdk: ready')
+    await dialog.showMessageBox(state.window, {
+      type: 'info',
+      message: t('menu.phone'),
+      detail: t('dialog.phoneInstalled', { name: AVD_NAME }),
+      buttons: [t('button.ok')],
+    })
+  } catch (error) {
+    errorDialog(t('dialog.phoneInstallFailed'), error)
+  } finally {
+    state.phoneInstalling = false
+    buildMenu()
+  }
 }
 
 /** The remembered panel width, or a sensible one. */
@@ -3913,10 +4003,12 @@ function deviceItems() {
       label: `${state.miniapp?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.miniapp')}`,
       click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
     },
-    {
-      label: `${state.phone?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.phone')}`,
-      click: () => { togglePhone().catch(error => errorDialog(t('menu.phone'), error)) },
-    },
+    state.phoneInstalling
+      ? { label: t('menu.phoneInstalling'), enabled: false }
+      : {
+        label: `${state.phone?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.phone')}`,
+        click: () => { togglePhone().catch(error => errorDialog(t('menu.phone'), error)) },
+      },
   ]
 }
 
