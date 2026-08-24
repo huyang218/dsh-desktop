@@ -223,6 +223,25 @@ export const SERVICE_DISABLED = 'the DevTools service port is switched off'
   + ' — open it under 设置 → 安全设置 → 服务端口, then try again'
 
 /**
+ * Why opening a project is a decision and not a detail.
+ *
+ * The DevTools asks before opening a project it has not seen, because opening
+ * one runs code from it. Left unanswered, that question is invisible from
+ * here in the worst possible way: the automation port opens, `Tool.getInfo`
+ * answers in milliseconds, and every `App.*` call hangs forever behind a
+ * dialog nobody mentioned. It cost an afternoon to find, which is a good
+ * reason to say so here.
+ *
+ * So `trust` answers it — and is a parameter rather than a constant, because
+ * the answer is not ours to assume. It belongs to whoever can say the user
+ * chose this project: a directory picked in our own window, or one the agent
+ * wrote inside the session's workspace. A path that arrived some other way
+ * should reach the user as the DevTools' own question, not as a decision this
+ * file made quietly on their behalf.
+ */
+export const TRUST_NOTE = 'the DevTools asks before opening an unfamiliar project'
+
+/**
  * Starts the DevTools against a project and connects to it.
  *
  * `cli auto` is the DevTools' own supported entry point: it opens the project
@@ -240,15 +259,20 @@ export const SERVICE_DISABLED = 'the DevTools service port is switched off'
  * @param {object} options
  * @param {string} options.cliPath from {@link ./miniapp-tool.js findDevTools}
  * @param {string} options.projectPath directory holding project.config.json
+ * @param {boolean} [options.trust] answer the DevTools' trust prompt for this
+ *   project; see {@link TRUST_NOTE}
  * @param {number} [options.timeout]
  * @param {(line: string) => void} [options.log]
  * @returns {Promise<Session>}
  */
-export async function launch({ cliPath, projectPath, timeout = LAUNCH_TIMEOUT_MS, log }) {
+export async function launch({ cliPath, projectPath, trust = false, timeout = LAUNCH_TIMEOUT_MS, log }) {
   const port = await getFreePort()
   log?.(`starting the DevTools on automation port ${port}`)
 
-  const child = spawn(cliPath, ['auto', '--project', projectPath, '--auto-port', String(port)], {
+  const args = ['auto', '--project', projectPath, '--auto-port', String(port)]
+  if (trust) args.push('--trust-project')
+
+  const child = spawn(cliPath, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     // Its own process group, so that ending the launcher is a decision about
     // the launcher. The `cli` is a shell script that starts a GUI application
