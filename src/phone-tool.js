@@ -50,7 +50,8 @@ const BINARIES = {
  * @property {Record<string, string>} bin the tools found, by name
  * @property {string[]} images system images installed, e.g. `android-35`
  * @property {string[]} avds virtual devices defined, by name
- * @property {string[]} running serial numbers of emulators answering `adb`
+ * @property {Target[]} targets everything adb can talk to, classified
+ * @property {string[]} running serials of Google AVDs answering `adb`
  */
 
 /**
@@ -88,7 +89,11 @@ export function findAndroid({ env = process.env, home = homedir(), chosen, manag
       bin,
       images: listImages(root),
       avds: listAvds(bin, env),
-      running: listRunning(bin),
+      targets: listTargets(bin),
+      // The ladder below is about a phone this app may start on its own, and
+      // that is an AVD. A third-party emulator or a real device is something
+      // the user attaches deliberately, and does not make the app "ready".
+      running: listTargets(bin).filter(target => target.kind === 'avd').map(target => target.serial),
     }
   }
   return undefined
@@ -158,28 +163,143 @@ function listAvds(bin, env) {
 }
 
 /**
- * Emulators currently answering.
+ * Where the third-party Android emulators listen for `adb connect`.
  *
- * `adb devices` also lists real phones plugged in over USB, which are not
- * ours to drive: somebody's actual telephone is not a simulated device, and
- * an agent tapping around on one is a different feature with a different
- * conversation attached. Only the `emulator-NNNN` serials are kept.
+ * None of these announce themselves. A Google AVD registers with the running
+ * adb server and shows up in `adb devices` on its own; MuMu, LDPlayer, Nox
+ * and the rest expose a port and wait to be connected to, so a machine with
+ * one running looks, to adb, exactly like a machine with nothing running.
+ * The only way to find them is to knock.
  *
- * @param {Record<string, string>} bin @returns {string[]}
+ * Ports change between major versions of these products and each of them
+ * offsets per extra instance, so this list is a starting point and not a
+ * promise — which is why `connect` takes an address as well, for the one
+ * somebody is running on a port nobody guessed.
  */
-function listRunning(bin) {
+export const KNOWN_EMULATOR_PORTS = [
+  { port: 16384, name: 'MuMu 12' },
+  { port: 7555, name: 'MuMu 6' },
+  { port: 5555, name: 'LDPlayer / BlueStacks' },
+  { port: 5565, name: 'BlueStacks 5' },
+  { port: 62001, name: 'Nox' },
+  { port: 21503, name: 'MEmu' },
+  { port: 6555, name: 'Genymotion' },
+]
+
+/**
+ * @typedef {object} Target
+ * @property {string} serial what adb calls it
+ * @property {'avd'|'network'|'usb'} kind how it is attached
+ * @property {string} [model] what it says it is
+ * @property {boolean} simulated whether this app is confident it is not a real phone
+ */
+
+/**
+ * Everything adb can currently talk to, and what each thing is.
+ *
+ * The classification matters more than the list. A Google AVD is a device
+ * this app may start, stop and tap on freely. A phone on the end of a USB
+ * cable is somebody's actual telephone, with their messages and their bank on
+ * it, and an agent that picks it up because it happened to be first in the
+ * list has done something nobody asked for. So the kind travels with the
+ * serial everywhere, and the engine refuses to choose anything but an AVD on
+ * its own.
+ *
+ * `network` is the ambiguous one, deliberately: a third-party emulator and a
+ * phone on wireless debugging are the same shape to adb. It is reported as
+ * unconfirmed rather than guessed, and named by its model so a person can
+ * tell at a glance.
+ *
+ * @param {Record<string, string>} bin @returns {Target[]}
+ */
+function listTargets(bin) {
+  let out
   try {
-    const out = execFileSync(bin.adb, ['devices'], {
+    out = execFileSync(bin.adb, ['devices', '-l'], {
       encoding: 'utf8',
       timeout: 15_000,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
-    return out.split('\n').slice(1)
-      .map(line => line.split('\t'))
-      .filter(([serial, state]) => serial?.startsWith('emulator-') && state?.trim() === 'device')
-      .map(([serial]) => serial)
   } catch {
     return []
+  }
+  const targets = []
+  for (const line of out.split('\n').slice(1)) {
+    const [serial, rest] = line.split(/\s+/, 1).concat(line.replace(/^\S+\s*/, ''))
+    if (!serial || !rest?.startsWith('device')) continue
+    const model = /\bmodel:(\S+)/.exec(rest)?.[1]?.replace(/_/g, ' ')
+    const kind = /^emulator-\d+$/.test(serial) ? 'avd' : serial.includes(':') ? 'network' : 'usb'
+    targets.push({ serial, kind, model, simulated: kind === 'avd' })
+  }
+  return targets
+}
+
+/**
+ * Knocks on the ports the third-party emulators are usually behind.
+ *
+ * Each connect is cheap and failing is the normal answer — most of these
+ * ports have nothing on them on any given machine. A connection that
+ * succeeds joins the adb device list and stays there, which is the point.
+ *
+ * Two things it has to avoid, both found by running it.
+ *
+ * A Google AVD listens for adb one port above its console port, so
+ * `emulator-5554` has an adbd on 5555 — which is also where LDPlayer and
+ * BlueStacks are. Knocking there connects to the device already in the list
+ * under another name, and adb keeps both: one phone, two entries, and a scan
+ * that reports the user's own AVD as somebody else's product. Those ports are
+ * skipped.
+ *
+ * And the name in this table is a guess about which product uses a port,
+ * while the model adb reports is what actually answered. Both are returned,
+ * the fact first.
+ *
+ * @param {Record<string, string>} bin
+ * @param {Array<{port: number, name: string}>} [ports]
+ * @returns {Array<{port: number, name: string, serial: string, model?: string}>}
+ */
+export function scanEmulators(bin, ports = KNOWN_EMULATOR_PORTS) {
+  const before = listTargets(bin)
+  const taken = new Set(before
+    .map(target => /^emulator-(\d+)$/.exec(target.serial)?.[1])
+    .filter(Boolean)
+    .map(console_ => Number(console_) + 1))
+
+  const found = []
+  for (const entry of ports) {
+    if (taken.has(entry.port)) continue
+    const address = `127.0.0.1:${entry.port}`
+    try {
+      const out = execFileSync(bin.adb, ['connect', address], {
+        encoding: 'utf8',
+        timeout: 5_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      if (/connected to/i.test(out)) found.push({ ...entry, serial: address })
+    } catch { /* nothing there, which is the usual answer */ }
+  }
+  if (found.length === 0) return found
+  // Ask what answered rather than reporting what the table guessed.
+  const after = listTargets(bin)
+  return found.map(entry => ({ ...entry, model: after.find(target => target.serial === entry.serial)?.model }))
+}
+
+/**
+ * Attaches to one address.
+ *
+ * @param {Record<string, string>} bin @param {string} address `host:port`
+ * @returns {{ ok: boolean, why: string }}
+ */
+export function connectTo(bin, address) {
+  try {
+    const out = execFileSync(bin.adb, ['connect', address], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return { ok: /connected to/i.test(out), why: out }
+  } catch (error) {
+    return { ok: false, why: String(error?.message ?? error) }
   }
 }
 

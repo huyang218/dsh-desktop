@@ -15,6 +15,12 @@
  *   - iOS devices can be looked at and not driven. Apple ships no supported
  *     way to inject a touch into the Simulator, so the verbs that act say
  *     which devices they work on.
+ *   - Not every phone adb can reach is a simulator. A Google virtual device
+ *     is one this app may start and tap on freely; a third-party emulator is
+ *     one the user attached; a phone on a USB cable is somebody's actual
+ *     telephone. `open` picks only the first kind on its own, and the others
+ *     have to be named — which is a rule the descriptions state, because a
+ *     model that does not know it will assume the list is a menu.
  *
  * Electron-free, and free of adb too: this file knows the vocabulary.
  */
@@ -63,16 +69,32 @@ export const OPS = {
     params: {},
   },
   devices: {
-    summary: 'Everything that could be started: Android virtual devices, and iOS simulators when Xcode is here.',
+    summary: 'What is here: Android virtual devices that could be started, anything adb is already talking to '
+      + '(with what kind of thing it is), and iOS simulators when Xcode is installed.',
     params: {},
   },
   open: {
-    summary: 'Start a phone and wait until it has finished booting, or attach to one already running.',
+    summary: 'Start a phone and wait until it has finished booting, or attach to one already running. '
+      + 'With nothing named, it uses a Google virtual device and never anything else — a third-party emulator '
+      + 'or a real phone has to be named with serial, because neither is this app\'s to pick up uninvited.',
     params: {
       avd: { type: 'string', description: 'Android virtual device name from `devices`. Defaults to the only one, when there is one.' },
+      serial: { type: 'string', description: 'Attach to something already in `devices` by its serial, e.g. 127.0.0.1:7555 or a phone\'s serial number.' },
       ios: { type: 'string', description: 'An iOS simulator name or udid instead. iOS can be looked at but not driven.' },
     },
     positional: ['avd'],
+  },
+  connect: {
+    summary: 'Attach adb to an emulator listening on a port, e.g. 127.0.0.1:7555. '
+      + 'Third-party emulators do not announce themselves the way Google\'s does; they wait to be connected to.',
+    params: { address: { type: 'string', description: 'host:port, e.g. 127.0.0.1:16384.' } },
+    required: ['address'],
+    positional: ['address'],
+  },
+  scan: {
+    summary: 'Knock on the ports the common third-party emulators use — MuMu, LDPlayer, Nox, BlueStacks, MEmu — '
+      + 'and report what answered. Use when `devices` shows nothing but an emulator is plainly running.',
+    params: {},
   },
   close: {
     summary: 'Shut down the phone. Only shuts down one this app started; one that was already running is left alone.',

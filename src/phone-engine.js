@@ -33,7 +33,7 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { BOOT_TIMEOUT_MS, DEFAULT_LOG_LINES, KEYS } from './phone-ops.js'
-import { findAndroid, findIos, inspectPhones } from './phone-tool.js'
+import { connectTo, findAndroid, findIos, inspectPhones, scanEmulators } from './phone-tool.js'
 import { actionable, describeScreen, parseDump } from './phone-ui.js'
 
 const run = promisify(execFile)
@@ -93,24 +93,78 @@ export function createEngine({ log, chosen, managed } = {}) {
     async devices() {
       const seen = inspectPhones({ chosen, managed })
       const lines = []
-      for (const avd of seen.sdk?.avds ?? []) lines.push(`android  ${avd}`)
+      for (const target of seen.sdk?.targets ?? []) {
+        lines.push(`attached  ${target.serial.padEnd(22)} ${KIND[target.kind]}`
+          + `${target.model ? ` — ${target.model}` : ''}`)
+      }
+      for (const avd of seen.sdk?.avds ?? []) lines.push(`avd       ${avd.padEnd(22)} not started`)
       for (const entry of seen.ios?.devices ?? []) {
-        lines.push(`ios      ${entry.name} — ${entry.runtime}${entry.booted ? ' (booted)' : ''} — look only, no input`)
+        lines.push(`ios       ${entry.name.padEnd(22)} ${entry.runtime}`
+          + `${entry.booted ? ' (booted)' : ''} — look only, no input`)
       }
       if (lines.length === 0) return { ok: true, why: EXPLAIN[seen.android] }
       return { ok: true, elements: lines.join('\n') }
     },
 
-    async open({ avd, ios: wantedIos }) {
+    async connect({ address }) {
+      const answer = connectTo(sdk().bin, String(address ?? ''))
+      if (!answer.ok) return fail(answer.why || `nothing answered at ${address}`)
+      device = { serial: String(address), ours: false }
+      refs = new Map()
+      return { ok: true, serial: device.serial, why: answer.why }
+    },
+
+    async scan() {
+      const found = scanEmulators(sdk().bin)
+      if (found.length === 0) {
+        return {
+          ok: true,
+          why: 'nothing answered on the ports the common third-party emulators use'
+            + ' — if one is running, `connect` takes the address it is actually on',
+        }
+      }
+      return {
+        ok: true,
+        elements: found.map(entry =>
+          `${entry.serial.padEnd(22)} ${entry.model ?? `probably ${entry.name}`}`).join('\n'),
+      }
+    },
+
+    async open({ avd, serial, ios: wantedIos }) {
       if (wantedIos) return openIos(wantedIos)
       const found = sdk()
+
+      if (serial) {
+        // Named, so anything goes — including a real phone. The naming is the
+        // consent: an agent that types a serial number has been told one.
+        const target = found.targets.find(entry => entry.serial === serial)
+        if (!target) {
+          return fail(`adb is not talking to ${serial} — run \`devices\` for what it has,`
+            + ' or `connect` for an emulator it has not been introduced to')
+        }
+        device = { serial, ours: false }
+        refs = new Map()
+        return { ok: true, serial, why: `attached to ${KIND[target.kind]}${target.model ? ` — ${target.model}` : ''}` }
+      }
+
       // Something already answering is what we attach to. Starting a second
       // emulator because one was not asked for by name would leave the user
       // with two phones and this app driving the one they were not watching.
+      //
+      // Only a Google virtual device, though. `targets` may well hold a phone
+      // on a USB cable, and picking that up because it was first in a list is
+      // this app deciding to tap around on somebody's actual telephone.
       if (found.running.length > 0) {
         device = { serial: found.running[0], ours: false }
         refs = new Map()
-        return { ok: true, serial: device.serial, why: 'attached to a phone that was already running' }
+        return { ok: true, serial: device.serial, why: 'attached to a virtual device that was already running' }
+      }
+      const attached = found.targets.filter(entry => entry.kind !== 'avd')
+      if (attached.length > 0 && found.avds.length === 0) {
+        return fail(`adb is talking to ${attached.map(entry => entry.serial).join(', ')},`
+          + ' but none of them is a virtual device this app started.'
+          + ' Name one with serial to use it — a third-party emulator or a real phone is not something'
+          + ' this app attaches to on its own.')
       }
       const name = avd ?? (found.avds.length === 1 ? found.avds[0] : undefined)
       if (!name) {
@@ -123,10 +177,10 @@ export function createEngine({ log, chosen, managed } = {}) {
       log?.(`starting the phone ${name}`)
       const child = execFile(found.bin.emulator, ['-avd', name], { detached: true })
       child.unref()
-      const serial = await waitForBoot(found)
-      device = { serial, ours: true, avd: name }
+      const booted = await waitForBoot(found)
+      device = { serial: booted, ours: true, avd: name }
       refs = new Map()
-      return { ok: true, serial, why: `${name} finished booting` }
+      return { ok: true, serial: booted, why: `${name} finished booting` }
     },
 
     async close() {
@@ -367,6 +421,13 @@ function point(value) {
 
 const pause = ms => new Promise(resolve => { setTimeout(resolve, ms) })
 const fail = (why, extra = {}) => ({ ok: false, why, ...extra })
+
+/** What each kind of attachment is, in the words a person needs to tell them apart. */
+const KIND = {
+  avd: 'a Google virtual device',
+  network: 'attached over the network — a third-party emulator, or a phone on wireless debugging',
+  usb: 'a real phone on a cable',
+}
 
 /** One sentence per rung of the ladder, each naming the one thing to do next. */
 const EXPLAIN = {
