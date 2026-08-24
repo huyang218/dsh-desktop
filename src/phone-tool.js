@@ -109,7 +109,7 @@ function* androidRoots({ env, home, managed }) {
   // Last: wherever the `adb` on PATH lives. It finds the installs nobody
   // anticipated, and it is last because a stray adb somewhere on PATH should
   // not outrank a real SDK in its usual place.
-  const onPath = which(isWindows ? 'adb.exe' : 'adb')
+  const onPath = which(isWindows ? 'adb.exe' : 'adb', env)
   if (onPath) yield path.resolve(path.dirname(onPath), '..')
   // Ours, if we ever installed one. Last of all: someone who has their own
   // SDK has more in it than we would ever install, and a machine that has
@@ -265,9 +265,15 @@ export function inspectPhones({ env = process.env, home = homedir(), managed } =
   return { android: 'stopped', sdk, ios }
 }
 
-/** @param {string} command @returns {string | undefined} */
-function which(command) {
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+/**
+ * @param {string} command
+ * @param {Record<string, string | undefined>} env the caller's environment,
+ *   not this process's — an `env` argument that some of the search ignores is
+ *   a seam that lies, and the lie only shows up in a test that passes
+ * @returns {string | undefined}
+ */
+function which(command, env) {
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
     if (!dir) continue
     const file = path.join(dir, command)
     if (existsSync(file)) return file

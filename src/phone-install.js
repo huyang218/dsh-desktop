@@ -20,18 +20,37 @@
  * package index `sdkmanager` itself reads, with the URL, the size and a SHA-1
  * for every host; that is what gets read.
  *
- * It does not accept the licence. `sdkmanager` will take a `y` on stdin and
- * this could send one, which would make an agreement between the user and
- * Google into a thing this app did on their behalf while they were looking
- * elsewhere. The acceptance is passed in, by a caller that showed the terms
- * and got an answer.
+ * It does not agree to anything. Google's terms are between the user and
+ * Google; this refuses to start until a caller says the user has said yes,
+ * and the tools themselves show the terms. There is no path through here
+ * that agrees on somebody's behalf.
+ *
+ * ## What the command-line tools turned into
+ *
+ * As of cmdline-tools 23, `sdkmanager` is a deprecated shell script that
+ * forwards to a new program: `android sdk`. The `android` binary in the same
+ * directory is not that program either — it is a bootstrapper that downloads
+ * it, about 80MB, on first use. Two consequences, both found by running it:
+ *
+ * The bootstrap download is one this app cannot see fail usefully — it
+ * reports `io: unexpected end of file` and stops. So the CLI is downloaded
+ * here instead, by the same code that fetches everything else, and the tools
+ * are told where it is through `ANDROID_CLI_BIN`. That is the script's own
+ * documented seam, not a trick.
+ *
+ * The CLI reads the proxy environment and its downloader does not survive
+ * every proxy: on the machine this was written on, a local proxy that `curl`
+ * uses happily produced that same truncated-file error on every download,
+ * while going direct worked. There is no way to tell those apart from here,
+ * so the error is reported with the proxy named in it, and the choice is left
+ * with the person who knows their own network.
  *
  * Electron-free.
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { mkdir, rename, rm, stat } from 'node:fs/promises'
+import { chmod, mkdir, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
@@ -42,8 +61,67 @@ const run = promisify(execFile)
 const INDEX_URL = 'https://dl.google.com/android/repository/repository2-3.xml'
 const ARCHIVE_BASE = 'https://dl.google.com/android/repository/'
 
-/** The terms `sdkmanager` will not proceed without. */
+/** The terms the SDK is offered under. */
 export const LICENCE_URL = 'https://developer.android.com/studio/terms'
+
+/**
+ * Where the Android CLI itself is published.
+ *
+ * Not in the package index — this one is a plain path per host, which is what
+ * the bootstrapper in the tools reaches for. `linux_arm64` is not published;
+ * a caller there gets told so rather than a 404 in the middle of an install.
+ */
+export function androidCliUrl(platform = process.platform, arch = process.arch) {
+  const host = { darwin: 'darwin', linux: 'linux', win32: 'windows' }[platform]
+  const cpu = arch === 'arm64' ? 'arm64' : 'x86_64'
+  if (!host) throw new Error(`Google publishes no Android CLI for ${platform}`)
+  if (host === 'linux' && cpu === 'arm64') throw new Error('Google publishes no Android CLI for linux on arm64')
+  if (host === 'windows' && cpu === 'arm64') throw new Error('Google publishes no Android CLI for Windows on arm64')
+  const name = host === 'windows' ? 'android-cli.exe' : 'android-cli'
+  return `https://dl.google.com/android/cli/latest/${host}_${cpu}/${name}`
+}
+
+/** Where this app keeps the CLI it downloaded, inside the SDK it belongs to. */
+export function androidCliPath(sdkRoot) {
+  return path.join(sdkRoot, 'cmdline-tools', 'latest', 'bin',
+    process.platform === 'win32' ? 'android-cli.exe' : 'android-cli')
+}
+
+/**
+ * Downloads the Android CLI the tools would otherwise bootstrap themselves.
+ *
+ * No digest to check: Google publishes none for this one. The size is
+ * checked against what the server said instead, which catches the truncation
+ * that is the failure actually seen here.
+ *
+ * @param {object} options
+ * @param {string} options.sdkRoot
+ * @param {(received: number, total: number) => void} [options.onProgress]
+ * @param {typeof fetch} [options.fetchImpl]
+ * @returns {Promise<string>} the path it was written to
+ */
+export async function installCli({ sdkRoot, onProgress, fetchImpl = fetch }) {
+  const target = androidCliPath(sdkRoot)
+  await mkdir(path.dirname(target), { recursive: true })
+  const { bytes, expected } = await downloadSized(androidCliUrl(), target, { fetchImpl, onProgress })
+  if (expected && bytes !== expected) {
+    await rm(target, { force: true })
+    throw new Error(`the Android CLI download stopped after ${bytes} of ${expected} bytes`
+      + proxyHint())
+  }
+  // Downloaded files are not executable, and this one has to be.
+  await chmod(target, 0o755)
+  return target
+}
+
+/** Names the proxy in an error, when there is one to name. */
+function proxyHint() {
+  const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY
+  return proxy
+    ? ` — this is what the Android CLI's downloader does behind some proxies; ${proxy} is configured here,`
+      + ' and going direct may be what works'
+    : ''
+}
 
 /** How long to wait to reach the server. The transfer itself is unbounded. */
 const REQUEST_TIMEOUT_MS = 30_000
@@ -177,36 +255,40 @@ export async function installTools({ sdkRoot, archive, onProgress, fetchImpl = f
 }
 
 /**
- * Accepts the SDK licences, having been told to.
- *
- * `accepted` is a parameter and not a default, and this throws rather than
- * asking, because there is exactly one right way for this to be called: after
- * a person has been shown {@link LICENCE_URL} and said yes.
- *
- * @param {object} options
- * @param {string} options.sdkRoot
- * @param {boolean} options.accepted what the user answered
- * @param {(line: string) => void} [options.onLine]
- */
-export async function acceptLicences({ sdkRoot, accepted, onLine }) {
-  if (!accepted) throw new Error('the Android SDK licences have not been accepted')
-  return sdkmanager({ sdkRoot, args: ['--licenses'], answer: 'y\n'.repeat(40), onLine })
-}
-
-/**
  * Installs SDK packages, reporting as it goes.
+ *
+ * `agreed` is a required parameter and this throws without it. There is no
+ * default, because the only correct way to reach this is after somebody was
+ * shown {@link LICENCE_URL} and said yes — and a default would be this
+ * module having an opinion about somebody else's agreement.
+ *
+ * Nothing is piped to accept anything. The old `sdkmanager --licenses` took a
+ * `y` on stdin and is now a no-op that prints "no longer needed"; the CLI
+ * presents Google's terms itself. So the consent here gates whether this runs
+ * at all, which is the honest shape: this app does not agree, it declines to
+ * start until the user has.
  *
  * @param {object} options
  * @param {string} options.sdkRoot
  * @param {string[]} options.packages
+ * @param {boolean} options.agreed what the user answered to the terms
  * @param {(line: string) => void} [options.onLine]
  */
-export async function installPackages({ sdkRoot, packages, onLine }) {
-  return sdkmanager({ sdkRoot, args: [...packages], onLine, timeout: 3_600_000 })
+export async function installPackages({ sdkRoot, packages, agreed, onLine }) {
+  if (!agreed) throw new Error('the Android SDK terms have not been accepted')
+  return androidCli({ sdkRoot, args: ['sdk', 'install', ...packages], onLine, timeout: 3_600_000 })
+}
+
+/** What the SDK already has, as the CLI reports it. */
+export async function listInstalled({ sdkRoot, onLine }) {
+  return androidCli({ sdkRoot, args: ['sdk', 'list'], onLine, timeout: 300_000 })
 }
 
 /**
  * Creates a virtual device from an installed system image.
+ *
+ * Still `avdmanager`: the new CLI took over package management and left this
+ * where it was.
  *
  * @param {object} options
  * @param {string} options.sdkRoot
@@ -227,23 +309,38 @@ export async function createAvd({ sdkRoot, name, image = defaultImage(), onLine 
   })
 }
 
-/** One `sdkmanager` run, pointed at the SDK it is installing into. */
-function sdkmanager({ sdkRoot, args, answer, onLine, timeout = 600_000 }) {
-  const binary = path.join(sdkRoot, 'cmdline-tools', 'latest', 'bin',
-    process.platform === 'win32' ? 'sdkmanager.bat' : 'sdkmanager')
-  return spawnText(binary, [`--sdk_root=${sdkRoot}`, ...args], {
-    env: { ANDROID_HOME: sdkRoot, ANDROID_SDK_ROOT: sdkRoot },
-    answer,
-    onLine,
-    timeout,
-  })
+/**
+ * One run of the Android CLI, pointed at the SDK it is managing.
+ *
+ * `ANDROID_CLI_BIN` is set as well as the binary being invoked directly, so
+ * that anything the CLI shells out to — `avdmanager`, the deprecated
+ * `sdkmanager` script — finds the copy this app downloaded rather than trying
+ * to bootstrap its own.
+ */
+async function androidCli({ sdkRoot, args, onLine, timeout }) {
+  const binary = androidCliPath(sdkRoot)
+  try {
+    return await spawnText(binary, [`--sdk=${sdkRoot}`, ...args], {
+      env: { ANDROID_HOME: sdkRoot, ANDROID_SDK_ROOT: sdkRoot, ANDROID_CLI_BIN: binary },
+      onLine,
+      timeout,
+    })
+  } catch (error) {
+    // The CLI's own downloader fails this way behind some proxies, and its
+    // message says nothing about why. Naming the proxy turns a stack trace
+    // into something the person whose network it is can act on.
+    throw TRUNCATED.test(error.message) ? new Error(error.message + proxyHint()) : error
+  }
 }
+
+/** How the CLI reports a transfer that stopped early. */
+const TRUNCATED = /unexpected end of file|Failed to connect/i
 
 /**
  * Runs a tool and streams its output a line at a time.
  *
- * These print progress percentages for tens of minutes; collecting all of it
- * and handing it over at the end would be a feature that looks frozen.
+ * These print progress for tens of minutes; collecting all of it and handing
+ * it over at the end would be a feature that looks frozen.
  *
  * @returns {Promise<string>} everything it said
  */
@@ -270,6 +367,41 @@ function spawnText(binary, args, { env = {}, answer, onLine, timeout }) {
       })
     }
   })
+}
+
+/**
+ * Downloads without a digest to check, reporting what the server promised.
+ *
+ * @returns {Promise<{bytes: number, expected: number}>}
+ */
+async function downloadSized(url, file, { fetchImpl, onProgress }) {
+  const response = await fetched(url, fetchImpl)
+  const expected = Number(response.headers.get('content-length')) || 0
+  let received = 0
+  await pipeline(
+    async function* () {
+      for await (const chunk of response.body) {
+        received += chunk.length
+        onProgress?.(received, expected)
+        yield chunk
+      }
+    },
+    createWriteStream(file),
+  )
+  return { bytes: received, expected }
+}
+
+/** One request, with a timeout on reaching the server and none on the body. */
+async function fetched(url, fetchImpl) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
+  try {
+    const response = await fetchImpl(url, { redirect: 'follow', signal: controller.signal })
+    if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`)
+    return response
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /** @returns {Promise<string>} the sha1 of what was written */

@@ -66,7 +66,7 @@ import { createEngine } from './miniapp-engine.js'
 import { createEngine as createPhoneEngine } from './phone-engine.js'
 import { inspectPhones } from './phone-tool.js'
 import {
-  acceptLicences, createAvd, hasJava, installPackages, installTools, LICENCE_URL, requiredPackages,
+  createAvd, hasJava, installCli, installPackages, installTools, LICENCE_URL, requiredPackages,
 } from './phone-install.js'
 import { deployBundledSkills } from './bundled-skills.js'
 import { isSourceLaunch } from './source-launch.js'
@@ -1957,21 +1957,27 @@ async function installAndroid(seen) {
   state.phoneInstalling = true
   buildMenu()
   try {
-    if (!seen.sdk) {
+    // Every tenth, not every chunk: these are hundreds of megabytes and the
+    // log is not a progress bar.
+    const tenths = what => {
       let announced = 0
-      await installTools({
-        sdkRoot,
-        onProgress: (received, total) => {
-          // Every tenth, not every chunk: this is a hundred and fifty
-          // megabytes and the log is not a progress bar.
-          const done = total ? Math.floor((received / total) * 10) : 0
-          if (done > announced) { announced = done; log(`android sdk: downloading ${done * 10}%`) }
-        },
-      })
+      return (received, total) => {
+        const done = total ? Math.floor((received / total) * 10) : 0
+        if (done > announced) { announced = done; log(`android sdk: ${what} ${done * 10}%`) }
+      }
     }
-    await acceptLicences({ sdkRoot, accepted: true, onLine: line => log(`android sdk: ${line}`) })
+    if (!seen.sdk) await installTools({ sdkRoot, onProgress: tenths('command-line tools') })
     if (seen.android !== 'noDevice') {
-      await installPackages({ sdkRoot, packages: requiredPackages(), onLine: line => log(`android sdk: ${line}`) })
+      // The tools no longer manage packages themselves; they forward to a CLI
+      // they would otherwise bootstrap over a download this app cannot watch
+      // fail. Fetched here so that a failure is one we can describe.
+      await installCli({ sdkRoot, onProgress: tenths('android cli') })
+      await installPackages({
+        sdkRoot,
+        packages: requiredPackages(),
+        agreed: true,
+        onLine: line => log(`android sdk: ${line}`),
+      })
     }
     await createAvd({ sdkRoot, name: AVD_NAME, onLine: line => log(`android sdk: ${line}`) })
     log('android sdk: ready')
