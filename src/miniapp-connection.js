@@ -25,6 +25,7 @@
  */
 import { spawn } from 'node:child_process'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { running } from './miniapp-tool.js'
 import { getFreePort } from './server.js'
 
 /** How long to keep trying to reach a simulator we just asked to start. */
@@ -256,8 +257,14 @@ export const TRUST_NOTE = 'the DevTools asks before opening an unfamiliar projec
  * and waits forever for an answer. A launcher that ignored its output would
  * wait out the whole timeout and then leave the process sitting there.
  *
+ * Whether the DevTools was already running decides who owns it afterwards.
+ * `cli auto` opens the project in the running instance when there is one, so
+ * a launch against an IDE the user already had open is us borrowing their
+ * application, not starting our own — and the session says which, because
+ * closing it later depends entirely on the answer.
+ *
  * @param {object} options
- * @param {string} options.cliPath from {@link ./miniapp-tool.js findDevTools}
+ * @param {import('./miniapp-tool.js').DevTools} options.tool from findDevTools
  * @param {string} options.projectPath directory holding project.config.json
  * @param {boolean} [options.trust] answer the DevTools' trust prompt for this
  *   project; see {@link TRUST_NOTE}
@@ -265,14 +272,17 @@ export const TRUST_NOTE = 'the DevTools asks before opening an unfamiliar projec
  * @param {(line: string) => void} [options.log]
  * @returns {Promise<Session>}
  */
-export async function launch({ cliPath, projectPath, trust = false, timeout = LAUNCH_TIMEOUT_MS, log }) {
+export async function launch({ tool, projectPath, trust = false, pure = false, timeout = LAUNCH_TIMEOUT_MS, log }) {
+  // Asked before the spawn, because afterwards the answer is always yes.
+  const ours = !await running(tool)
   const port = await getFreePort()
   log?.(`starting the DevTools on automation port ${port}`)
 
   const args = ['auto', '--project', projectPath, '--auto-port', String(port)]
   if (trust) args.push('--trust-project')
+  if (pure) args.push('--pure-simulator')
 
-  const child = spawn(cliPath, args, {
+  const child = spawn(tool.cliPath, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     // Its own process group, so that ending the launcher is a decision about
     // the launcher. The `cli` is a shell script that starts a GUI application
@@ -303,7 +313,7 @@ export async function launch({ cliPath, projectPath, trust = false, timeout = LA
         // The launcher outlives the connection: `cli auto` holds the session
         // open, so ending it is part of ending the session rather than
         // something to do once this returns.
-        return await connect(port, { ours: true, onClose: () => endLauncher(child) })
+        return await connect(port, { ours, onClose: () => endLauncher(child) })
       } catch { /* not up yet */ }
       await sleep(RETRY_MS)
     }

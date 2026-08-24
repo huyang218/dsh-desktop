@@ -405,3 +405,70 @@ export async function inspectDevTools({ env = process.env, home = homedir() } = 
   }
   return { state: 'stopped', tool, service }
 }
+
+/**
+ * Whether the DevTools is running right now.
+ *
+ * Asked of the port rather than of the process table, and that is the whole
+ * point: the port is the same question on both platforms, it needs no
+ * enumeration, no name to match and no privileges, and it answers the
+ * question actually being asked. A DevTools process that is alive but no
+ * longer serving is not something anything here can use.
+ *
+ * @param {DevTools} tool @returns {Promise<boolean>}
+ */
+export async function running(tool) {
+  const { port } = readService(tool?.userDir)
+  return port !== undefined && await reachable(port)
+}
+
+/**
+ * Asks the DevTools to quit, and waits until it has.
+ *
+ * Only ever called for a DevTools this app started — see the `ours` flag on a
+ * session. A user's own open window holds their unsaved work, and closing it
+ * because our feature is finished with it would be taking something that was
+ * never offered.
+ *
+ * Asking rather than killing, for the same reason. Each platform has one
+ * ordinary way to ask an application to quit, which is what a person choosing
+ * Quit from a menu does: the application gets to save, to close cleanly, and
+ * to refuse. A refusal is reported rather than escalated — there is no
+ * SIGKILL here, because a window that will not close is usually one with a
+ * dialog in front of it that somebody needs to read.
+ *
+ * `Tool.close` is not this. It closes the project window and leaves the
+ * application running, which is the right verb for letting go of a project
+ * and the wrong one for letting go of the DevTools.
+ *
+ * @param {DevTools} tool
+ * @param {{timeout?: number}} [options]
+ * @returns {Promise<boolean>} whether it is gone
+ */
+export async function quitDevTools(tool, { timeout = 15_000 } = {}) {
+  try {
+    if (isWindows) {
+      // No /F: this is the close request, not the kill. Windows sends it to
+      // the window, and an application with unsaved work gets to say no.
+      execFileSync('taskkill', ['/IM', 'wechatdevtools.exe'], { stdio: 'ignore', timeout: 10_000 })
+    } else {
+      // By bundle identifier rather than by name, because the name on disk
+      // (`wechatwebdevtools`) and the name macOS knows it by are not reliably
+      // the same string, and the identifier is the one this app already
+      // matches on when Spotlight is asked where it lives.
+      execFileSync('osascript', ['-e', 'tell application id "com.tencent.webplusdevtools" to quit'], {
+        stdio: 'ignore',
+        timeout: 10_000,
+      })
+    }
+  } catch {
+    // It may already be gone, or refusing. The poll below is the answer
+    // either way, so there is nothing useful to report from here.
+  }
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    if (!await running(tool)) return true
+    await new Promise(resolve => { setTimeout(resolve, 500) })
+  }
+  return false
+}
