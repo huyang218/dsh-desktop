@@ -64,7 +64,7 @@ import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-
 import { registerMcpTools } from './mcp-register.js'
 import { createEngine } from './miniapp-engine.js'
 import { createEngine as createPhoneEngine } from './phone-engine.js'
-import { inspectPhones } from './phone-tool.js'
+import { inspectPhones, verifyAndroid } from './phone-tool.js'
 import {
   createAvd, hasJava, installCli, installPackages, installTools, LICENCE_URL, packageSizes,
   requiredPackages, watchDownloads,
@@ -1804,6 +1804,106 @@ function toggleBrowserPanel() {
   showWindow()
 }
 
+/**
+ * Where the user said their tools are.
+ *
+ * Read at the point of use rather than held, because the point of a setting
+ * is that changing it takes effect — and the engines that consume this are
+ * long-lived.
+ */
+const chosenAndroid = () => readSettings().androidSdk
+const chosenDevTools = () => readSettings().devtoolsPath
+
+/**
+ * Asks which Android SDK to use, checks it, and says what it found.
+ *
+ * A picker on its own would be a setting that fails later, somewhere else,
+ * with a message about a missing `adb`. So the directory is judged while the
+ * user is still standing in front of it, and the answer names what is there
+ * and what is not — a usable SDK, or one that needs an image, or a directory
+ * that is not an SDK at all.
+ */
+async function chooseAndroidSdk() {
+  const picked = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickAndroidSdk'),
+    properties: ['openDirectory'],
+    defaultPath: chosenAndroid() || undefined,
+    message: t('dialog.pickAndroidSdkHint'),
+  })
+  const directory = picked.filePaths?.[0]
+  if (picked.canceled || !directory) return
+
+  const found = verifyAndroid(directory)
+  if (!found.root) {
+    await dialog.showMessageBox(state.window, {
+      type: 'warning',
+      message: t('dialog.androidSdkBad'),
+      detail: t('dialog.androidSdkNotOne', { dir: directory }),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+
+  writeSettings({ androidSdk: found.root })
+  // The engine caches what it was told; dropping it is how the next call
+  // picks up the location that was just chosen, without a restart.
+  state.phone?.dispose()
+  state.phone = undefined
+  buildMenu()
+  log(`android sdk: using ${found.root}`)
+
+  // Usable is usable: nothing more is needed for the agent's tools, which are
+  // already mounted, so the answer says so rather than implying another step.
+  const detail = found.ok
+    ? t('dialog.androidSdkReady', { dir: found.root, images: found.images.join(', '), avds: found.avds.join(', ') })
+    : t('dialog.androidSdkIncomplete', {
+      dir: found.root,
+      missing: found.missing.map(part => t(`dialog.androidMissing.${part}`)).join('、'),
+    })
+  await dialog.showMessageBox(state.window, {
+    type: found.ok ? 'info' : 'warning',
+    message: found.ok ? t('dialog.androidSdkOk') : t('dialog.androidSdkBad'),
+    detail,
+    buttons: [t('button.ok')],
+  })
+}
+
+/** The same, for the WeChat DevTools. */
+async function chooseDevToolsPath() {
+  const picked = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickDevTools'),
+    // The DevTools is an application bundle on macOS and a directory on
+    // Windows, and a picker that only takes one of those refuses the right
+    // answer on the other platform.
+    properties: process.platform === 'darwin' ? ['openFile', 'openDirectory'] : ['openDirectory'],
+    defaultPath: chosenDevTools() || (process.platform === 'darwin' ? '/Applications' : undefined),
+  })
+  const directory = picked.filePaths?.[0]
+  if (picked.canceled || !directory) return
+
+  const found = verifyDevTools(directory)
+  if (!found) {
+    await dialog.showMessageBox(state.window, {
+      type: 'warning',
+      message: t('dialog.devtoolsBad'),
+      detail: t('dialog.devtoolsNotOne', { dir: directory }),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+  writeSettings({ devtoolsPath: found.installPath })
+  state.miniapp?.dispose()
+  state.miniapp = undefined
+  buildMenu()
+  log(`devtools: using ${found.installPath}`)
+  await dialog.showMessageBox(state.window, {
+    type: 'info',
+    message: t('dialog.devtoolsOk'),
+    detail: t('dialog.devtoolsReady', { dir: found.installPath, version: found.version }),
+    buttons: [t('button.ok')],
+  })
+}
+
 /** Verbs bound for the mini program simulator rather than the browser. */
 const MINIAPP_PREFIX = 'miniapp.'
 /** Verbs bound for the phone. */
@@ -1819,13 +1919,13 @@ const AVD_NAME = 'dsh-phone'
  * never will.
  */
 function miniapp() {
-  state.miniapp ??= createEngine({ log })
+  state.miniapp ??= createEngine({ log, chosen: chosenDevTools() })
   return state.miniapp
 }
 
 /** The phone engine, on the same terms. */
 function phone() {
-  state.phone ??= createPhoneEngine({ log, managed: paths.androidSdk })
+  state.phone ??= createPhoneEngine({ log, chosen: chosenAndroid(), managed: paths.androidSdk })
   return state.phone
 }
 
@@ -1873,7 +1973,7 @@ async function togglePhone() {
     return
   }
 
-  const seen = inspectPhones({ managed: paths.androidSdk })
+  const seen = inspectPhones({ chosen: chosenAndroid(), managed: paths.androidSdk })
   if (seen.android === 'ready') {
     const result = await engine.run('open', {}, process.cwd())
     buildMenu()
@@ -4072,6 +4172,20 @@ function deviceItems() {
         label: `${state.phone?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.phone')}`,
         click: () => { togglePhone().catch(error => errorDialog(t('menu.phone'), error)) },
       },
+    { type: 'separator' },
+    {
+      label: t('menu.locations'),
+      submenu: [
+        {
+          label: t('menu.locationDevtools'),
+          click: () => { chooseDevToolsPath().catch(error => errorDialog(t('menu.locations'), error)) },
+        },
+        {
+          label: t('menu.locationAndroid'),
+          click: () => { chooseAndroidSdk().catch(error => errorDialog(t('menu.locations'), error)) },
+        },
+      ],
+    },
   ]
 }
 

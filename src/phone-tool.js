@@ -65,12 +65,14 @@ const BINARIES = {
  * @param {object} [options]
  * @param {Record<string, string | undefined>} [options.env]
  * @param {string} [options.home]
+ * @param {string} [options.chosen] a directory the user pointed this app at;
+ *   searched first, because being told beats every guess
  * @param {string} [options.managed] an SDK this app installed into its own
  *   data directory; searched last, so a user's own SDK always wins
  * @returns {AndroidSdk | undefined}
  */
-export function findAndroid({ env = process.env, home = homedir(), managed } = {}) {
-  for (const root of androidRoots({ env, home, managed })) {
+export function findAndroid({ env = process.env, home = homedir(), chosen, managed } = {}) {
+  for (const root of androidRoots({ env, home, chosen, managed })) {
     if (!root || !existsSync(root)) continue
     const bin = {}
     for (const [name, parts] of Object.entries(BINARIES)) {
@@ -93,7 +95,11 @@ export function findAndroid({ env = process.env, home = homedir(), managed } = {
 }
 
 /** @returns {Generator<string | undefined>} */
-function* androidRoots({ env, home, managed }) {
+function* androidRoots({ env, home, chosen, managed }) {
+  // First, and ahead of the environment: someone who used the app's own
+  // picker has said which SDK they mean, and an ANDROID_HOME left over in a
+  // shell profile is not a better answer than that.
+  yield chosen?.trim()
   for (const name of ANDROID_ENV) yield env[name]?.trim()
   if (isWindows) {
     if (env.LOCALAPPDATA) yield path.join(env.LOCALAPPDATA, 'Android', 'Sdk')
@@ -252,11 +258,12 @@ function runtimeName(identifier) {
  * would leave the user holding a two-gigabyte download when what they needed
  * was one command.
  *
- * @param {{env?: Record<string, string | undefined>, home?: string, managed?: string}} [options]
+ * @param {{env?: Record<string, string | undefined>, home?: string,
+ *   chosen?: string, managed?: string}} [options]
  * @returns {PhoneInspection}
  */
-export function inspectPhones({ env = process.env, home = homedir(), managed } = {}) {
-  const sdk = findAndroid({ env, home, managed })
+export function inspectPhones({ env = process.env, home = homedir(), chosen, managed } = {}) {
+  const sdk = findAndroid({ env, home, chosen, managed })
   const ios = findIos()
   if (!sdk) return { android: 'missing', ios }
   if (sdk.running.length > 0) return { android: 'ready', sdk, ios }
@@ -279,4 +286,40 @@ function which(command, env) {
     if (existsSync(file)) return file
   }
   return undefined
+}
+
+/**
+ * Judges one directory the user picked, and says what is wrong with it.
+ *
+ * The search elsewhere in this file answers "is there an SDK anywhere"; this
+ * answers "is *this* one usable", which is a different question and needs a
+ * different answer. Somebody who points at a directory and is told "not
+ * found" learns nothing — the useful reply names what is there, what is
+ * missing, and whether what is missing can be downloaded.
+ *
+ * Accepts being pointed slightly wrong, too. `platform-tools` and
+ * `cmdline-tools` are inside an SDK, and picking one of them in a file dialog
+ * is the natural mistake; the parent is checked rather than refused.
+ *
+ * @param {string} directory
+ * @returns {{ ok: boolean, root?: string, images: string[], avds: string[],
+ *   missing: Array<'sdk'|'adb'|'emulator'|'image'|'device'> }}
+ */
+export function verifyAndroid(directory) {
+  const candidates = [directory, path.dirname(directory), path.dirname(path.dirname(directory))]
+  for (const root of candidates) {
+    if (!root || !existsSync(root)) continue
+    const found = findAndroid({ env: {}, home: '\u0000', chosen: root })
+    // findAndroid searches on past a candidate it does not like, so the
+    // answer only counts when it is about the directory that was asked about.
+    if (!found || path.resolve(found.root) !== path.resolve(root)) continue
+    const missing = []
+    if (!found.bin.emulator) missing.push('emulator')
+    if (found.images.length === 0) missing.push('image')
+    if (found.avds.length === 0) missing.push('device')
+    return { ok: missing.length === 0, root: found.root, images: found.images, avds: found.avds, missing }
+  }
+  // Nothing here answered. `adb` is what {@link findAndroid} requires before
+  // it will call a directory an SDK, so its absence is what to report.
+  return { ok: false, images: [], avds: [], missing: ['sdk'] }
 }

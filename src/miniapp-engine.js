@@ -45,9 +45,11 @@ const DEDUPE_MS = 1_000
 /**
  * Creates the engine.
  *
- * @param {{log?: (line: string) => void}} [options]
+ * @param {object} [options]
+ * @param {(line: string) => void} [options.log]
+ * @param {string} [options.chosen] where the user said the DevTools is
  */
-export function createEngine({ log } = {}) {
+export function createEngine({ log, chosen } = {}) {
   /** @type {import('./miniapp-connection.js').Session | undefined} */
   let session
   /** @type {import('./miniapp-project.js').Project | undefined} */
@@ -75,7 +77,7 @@ export function createEngine({ log } = {}) {
         return fail(`${target} is not a mini program project`
           + ' — a project directory holds project.config.json beside the app entry it names')
       }
-      const tool = findDevTools()
+      const tool = findDevTools({ chosen })
       if (!tool) return fail('the WeChat DevTools is not installed, or is somewhere this app does not look')
 
       if (session && !session.closed()) await session.close()
@@ -89,7 +91,7 @@ export function createEngine({ log } = {}) {
     },
 
     async status() {
-      const tool = findDevTools()
+      const tool = findDevTools({ chosen })
       if (!tool) return { ok: true, state: 'missing', why: 'the WeChat DevTools is not installed' }
       if (!session || session.closed()) {
         return { ok: true, state: 'closed', version: tool.version, why: 'no simulator is open' }
@@ -106,7 +108,7 @@ export function createEngine({ log } = {}) {
       session = undefined
       project = undefined
       if (!ours) return { ok: true, closed: 'the session; the DevTools was already running and is left alone' }
-      const gone = await quitDevTools(findDevTools())
+      const gone = await quitDevTools(findDevTools({ chosen }))
       return { ok: true, closed: gone ? 'the simulator, and the DevTools with it' : 'the session; the DevTools would not quit' }
     },
 

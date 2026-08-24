@@ -79,11 +79,13 @@ const SERVICE_ON = 'On'
  * @param {object} [options]
  * @param {Record<string, string | undefined>} [options.env]
  * @param {string} [options.home]
+ * @param {string} [options.chosen] a location the user pointed this app at,
+ *   which outranks every guess and the environment with it
  * @returns {DevTools | undefined}
  */
-export function findDevTools({ env = process.env, home = homedir() } = {}) {
+export function findDevTools({ env = process.env, home = homedir(), chosen } = {}) {
   const seen = new Set()
-  for (const candidate of candidateInstalls({ env, home })) {
+  for (const candidate of candidateInstalls({ env, home, chosen })) {
     const installPath = path.resolve(candidate)
     if (seen.has(installPath)) continue
     seen.add(installPath)
@@ -136,7 +138,10 @@ function describeInstall(installPath, { env, home }) {
  * @param {{env: Record<string, string | undefined>, home: string}} context
  * @returns {Generator<string>}
  */
-function* candidateInstalls({ env, home }) {
+function* candidateInstalls({ env, home, chosen }) {
+  // Being told beats every guess, and beats an environment variable left in a
+  // shell profile years ago.
+  if (chosen?.trim()) yield normalizeInstall(chosen.trim())
   const override = env[INSTALL_ENV]?.trim()
   if (override) yield normalizeInstall(override)
   if (isWindows) {
@@ -471,4 +476,24 @@ export async function quitDevTools(tool, { timeout = 15_000 } = {}) {
     await new Promise(resolve => { setTimeout(resolve, 500) })
   }
   return false
+}
+
+/**
+ * Judges one location the user picked.
+ *
+ * The same job {@link ./phone-tool.js verifyAndroid} does for an SDK, and the
+ * same reason: "not found" tells somebody who just pointed at a directory
+ * nothing at all. This says whether that directory is the DevTools, and what
+ * version it is if so.
+ *
+ * @param {string} directory the `.app`, or the directory holding `cli`
+ * @returns {DevTools | undefined}
+ */
+export function verifyDevTools(directory) {
+  if (!directory?.trim()) return undefined
+  const found = findDevTools({ env: {}, home: '\u0000', chosen: directory })
+  // findDevTools carries on past a candidate it does not like, and an answer
+  // about some other installation is not an answer about this directory.
+  const asked = normalizeInstall(directory.trim())
+  return found && path.resolve(found.installPath) === path.resolve(asked) ? found : undefined
 }
