@@ -178,7 +178,7 @@ export function createEngine({ log } = {}) {
       return { ok: true, ran: handler, ...await where() }
     },
 
-    async data({ path: key, value }) {
+    async data({ key, value }) {
       if (value === undefined) {
         const result = await evaluate(READ_DATA, [key ?? null])
         return { ok: true, result: JSON.stringify(result, null, 2) }
@@ -189,7 +189,7 @@ export function createEngine({ log } = {}) {
       } catch {
         return fail(`value must be JSON; ${JSON.stringify(value)} is not`)
       }
-      if (!key) return fail('writing needs a path, e.g. `data count 3`')
+      if (!key) return fail('writing needs a key, e.g. `data count 3`')
       await evaluate(WRITE_DATA, [key, parsed])
       await settle()
       return { ok: true, result: `set ${key}` }
@@ -334,6 +334,15 @@ export function createEngine({ log } = {}) {
         return fail(error?.message ?? String(error))
       }
     },
+    /**
+     * Whether a simulator is open, answered without asking it.
+     *
+     * The menu is built synchronously and needs to know what its own item
+     * should say. `status` is the honest answer and it is a round trip to
+     * another application; this is what the app already knows.
+     */
+    isOpen: () => Boolean(session && !session.closed()),
+
     /** For the app's own shutdown: let go without asking the user anything. */
     async dispose() {
       if (session && !session.closed()) await session.close({ shutTool: false })

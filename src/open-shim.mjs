@@ -8,7 +8,7 @@
  * Not imported by the app. Run as a program, by the stub {@link ./open-bridge.js}
  * writes.
  */
-import { call, resolveLocal } from './browser-client.mjs'
+import { call, resolveLocal } from './bridge-client.mjs'
 
 const USAGE = 'usage: dsh-open <file-or-url>\n\n'
   + 'Opens an HTML page, SVG, PDF or image in the browser panel, beside the\n'

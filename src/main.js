@@ -61,7 +61,8 @@ import {
   textScript, waitScript,
 } from './browser-page.js'
 import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
-import { registerBrowserTools } from './mcp-register.js'
+import { registerMcpTools } from './mcp-register.js'
+import { createEngine } from './miniapp-engine.js'
 import { deployBundledSkills } from './bundled-skills.js'
 import { isSourceLaunch } from './source-launch.js'
 
@@ -1748,13 +1749,26 @@ function bundledSkillEnv() {
  *
  * @param {string} command the MCP stub's absolute path
  */
-async function registerTools(command) {
-  const wanted = readSettings().browserTools !== false
-  const outcome = await registerBrowserTools({
-    patchPath: path.join(paths.dshHome, 'cordis.patch.yml'),
-    ...(wanted ? { command } : {}),
-  }).catch(error => `failed: ${error?.message ?? error}`)
-  if (outcome !== 'unchanged') log(`browser tools ${outcome}`)
+async function registerTools(commands) {
+  const settings = readSettings()
+  const patchPath = path.join(paths.dshHome, 'cordis.patch.yml')
+  // Each surface is its own row and its own switch. They are separate
+  // capabilities — a browser that shares the user's logins and a simulator
+  // that drives somebody else's application are worth being able to refuse
+  // one at a time.
+  const servers = [
+    { name: 'browser', setting: 'browserTools', stub: commands['dsh-browser-mcp'] },
+    { name: 'miniapp', setting: 'miniappTools', stub: commands['dsh-miniapp-mcp'] },
+  ]
+  for (const { name, setting, stub } of servers) {
+    const wanted = settings[setting] !== false
+    const outcome = await registerMcpTools({
+      patchPath,
+      name,
+      ...(wanted ? { command: stub } : {}),
+    }).catch(error => `failed: ${error?.message ?? error}`)
+    if (outcome !== 'unchanged') log(`${name} tools ${outcome}`)
+  }
 }
 
 /**
@@ -1774,6 +1788,48 @@ function toggleBrowserPanel() {
   const entry = createPage()
   entry.view.webContents.loadURL('about:blank').catch(() => {})
   showWindow()
+}
+
+/** Verbs bound for the simulator rather than the browser. */
+const MINIAPP_PREFIX = 'miniapp.'
+
+/**
+ * The simulator engine, made when something first asks for it.
+ *
+ * Lazily, because it starts nothing on its own: an app that never opens a
+ * mini program should never have looked for a DevTools, and most launches
+ * never will.
+ */
+function miniapp() {
+  state.miniapp ??= createEngine({ log })
+  return state.miniapp
+}
+
+/**
+ * Opens a project in the simulator, or lets go of the one that is open.
+ *
+ * The menu's half of what the agent reaches through the socket, and the same
+ * engine underneath — so a simulator opened from here is the one the agent
+ * then drives, rather than a second of its own.
+ */
+async function toggleSimulator() {
+  const engine = miniapp()
+  const { state: current } = await engine.run('status', {}, process.cwd())
+  if (current === 'open') {
+    const result = await engine.run('close', {}, process.cwd())
+    buildMenu()
+    if (!result.ok) errorDialog(t('menu.miniapp'), new Error(result.why))
+    return
+  }
+  const picked = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickMiniapp'),
+    properties: ['openDirectory'],
+  })
+  const directory = picked.filePaths?.[0]
+  if (picked.canceled || !directory) return
+  const result = await engine.run('open', { project: directory }, process.cwd())
+  buildMenu()
+  if (!result.ok) errorDialog(t('dialog.miniappFailed'), new Error(result.why))
 }
 
 /** The remembered panel width, or a sensible one. */
@@ -2523,18 +2579,26 @@ async function startOpenBridge() {
     state.openBridge = await startBridge({
       address,
       token,
-      run: async (op, params) => {
-        const result = await runBrowserOp(op, params)
+      run: async (op, params, cwd) => {
+        // One socket, two surfaces. The browser's verbs are bare because they
+        // were here first and `dsh-open` already sends them that way;
+        // everything since carries its own prefix. Without one, `close` and
+        // `navigate` and half the rest would each mean two things.
+        const result = op.startsWith(MINIAPP_PREFIX)
+          ? await miniapp().run(op.slice(MINIAPP_PREFIX.length), params, cwd)
+          : await runBrowserOp(op, params)
         // One line per call, and the answer is not in it: a snapshot is
         // hundreds of elements and the log is for support, not for a
         // transcript of everything the agent looked at.
-        log(`browser ${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
+        log(`${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
+        // Opening or closing a simulator changes what the menu should say.
+        if (op === `${MINIAPP_PREFIX}open` || op === `${MINIAPP_PREFIX}close`) buildMenu()
         return result
       },
       log,
     })
     const commands = writeOpenCommand({ binDir: paths.binDir, nodeBin: state.toolchain.nodeBin, srcDir: here })
-    await registerTools(commands['dsh-browser-mcp'])
+    await registerTools(commands)
     return { DSH_DESKTOP_OPEN_SOCKET: address, DSH_DESKTOP_OPEN_TOKEN: token, ...bundledSkillEnv() }
   } catch (error) {
     log(`open bridge unavailable: ${error?.message ?? error}`)
@@ -3766,6 +3830,10 @@ function actionItems() {
       accelerator: 'CommandOrControl+B',
       click: toggleBrowserPanel,
     },
+    {
+      label: state.miniapp?.isOpen() ? t('menu.miniappClose') : t('menu.miniapp'),
+      click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
+    },
     { type: 'separator' },
     {
       label: t('menu.settings'),
@@ -4209,6 +4277,10 @@ if (!locked) {
     // decide whether a leftover address belongs to a live app or a dead one.
     state.openBridge?.close()
     state.openBridge = undefined
+    // Nothing is awaited: a DevTools this app started is asked to quit, and
+    // one it merely borrowed is left exactly as it was found.
+    state.miniapp?.dispose()
+    state.miniapp = undefined
     if (state.child) {
       event.preventDefault()
       log('stopping dsh server')

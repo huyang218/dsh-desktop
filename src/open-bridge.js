@@ -163,6 +163,8 @@ export function writeOpenCommand({ binDir, nodeBin, srcDir }) {
     'dsh-open': stub(binDir, nodeBin, 'dsh-open', 'open-shim.mjs'),
     'dsh-browser': stub(binDir, nodeBin, 'dsh-browser', 'browser-cli.mjs'),
     'dsh-browser-mcp': stub(binDir, nodeBin, 'dsh-browser-mcp', 'browser-mcp.mjs'),
+    'dsh-miniapp': stub(binDir, nodeBin, 'dsh-miniapp', 'miniapp-cli.mjs'),
+    'dsh-miniapp-mcp': stub(binDir, nodeBin, 'dsh-miniapp-mcp', 'miniapp-mcp.mjs'),
   }
 }
 
@@ -177,11 +179,14 @@ export function writeOpenCommand({ binDir, nodeBin, srcDir }) {
  */
 const COPIED = [
   'ops.js',
-  'browser-client.mjs',
+  'bridge-client.mjs',
   'browser-ops.js',
   'open-shim.mjs',
   'browser-cli.mjs',
   'browser-mcp.mjs',
+  'miniapp-ops.js',
+  'miniapp-cli.mjs',
+  'miniapp-mcp.mjs',
 ]
 
 /** One command: a stub that runs the bundled Node against one of the copies. */

@@ -120,10 +120,14 @@ export const OPS = {
       + 'direct way to put the app into a state worth looking at — far cheaper than tapping towards it, '
       + 'and it reaches states that tapping cannot produce at all.',
     params: {
-      path: { type: 'string', description: 'Read one key instead of all of it, e.g. "list" or "user.name".' },
-      value: { type: 'string', description: 'JSON to write at `path`. Omit to read.' },
+      // `key`, not `path`: the command line turns a parameter called `path`
+      // into an absolute filesystem path, which is right for `screenshot` and
+      // silently wrong here — `data path picked` would ask the app for a key
+      // named after a directory nobody has.
+      key: { type: 'string', description: 'Read one key instead of all of it, e.g. "list" or "user.name".' },
+      value: { type: 'string', description: 'JSON to write at `key`. Omit to read.' },
     },
-    positional: ['path', 'value'],
+    positional: ['key', 'value'],
   },
   call: {
     summary: 'Call a wx.* API in the running app, e.g. wx.getStorage or wx.showToast. '
