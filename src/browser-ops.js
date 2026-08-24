@@ -189,14 +189,21 @@ export const OPS = {
   },
   network: {
     summary: 'Recent network requests from the page, with status codes and an id for each. '
-      + 'Pass requestId to read what one of them actually returned — the response body, as the page received it.',
+      + 'JSON and failed responses come back with the start of what they returned, because a status code can say 200 '
+      + 'over an error the page then chokes on. Use body with an id to read one in full.',
     params: {
-      requestId: { type: 'string', description: 'Return this request\'s response body instead of the list.' },
       onlyErrors: { type: 'boolean', description: 'Only transport failures and status 400 and above.' },
       urlPattern: { type: 'string', description: 'Keep requests whose URL matches this regular expression.' },
       limit: { type: 'integer', description: 'Keep only the last this many.' },
       page,
     },
+  },
+  body: {
+    summary: 'Read what one request returned, in full, as the page received it. '
+      + 'Use this rather than fetching the URL again: a second request goes without the page\'s cookies, '
+      + 'may not be idempotent, and is not the response that produced the behaviour you are looking at.',
+    params: { requestId: { type: 'string', description: 'An id from `network`.' }, page },
+    required: ['requestId'],
     positional: ['requestId'],
   },
   wait: {
@@ -293,7 +300,11 @@ export function networkLine(entry) {
   const outcome = entry.error ?? entry.status ?? 'pending'
   const size = Number.isFinite(entry.bytes) && entry.bytes > 0 ? ` ${bytes(entry.bytes)}` : ''
   const id = entry.id ? ` [${entry.id}]` : ''
-  return `${outcome} ${entry.method} ${entry.url}${size}${id}`
+  // Indented under the request, the way a stack sits under its error: the
+  // list stays scannable, and the one line that answers the question is
+  // already on screen instead of one call away.
+  const preview = entry.preview ? `\n    ${entry.preview}` : ''
+  return `${outcome} ${entry.method} ${entry.url}${size}${id}${preview}`
 }
 
 /** Bytes at the precision a reader wants, which is never all of the digits. */

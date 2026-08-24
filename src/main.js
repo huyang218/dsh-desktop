@@ -1113,6 +1113,12 @@ const PANEL_LOG_MAX = 100
  * JSON, which is the only way this row leaves the process.
  */
 const CLAIMED = Symbol('claimed')
+/** Marks a row whose body has already been asked for, successfully or not. */
+const PREVIEWED = Symbol('previewed')
+/** How much of a body rides along in the request list. */
+const PREVIEW_MAX = 200
+/** How many bodies one listing will fetch unasked. */
+const PREVIEW_ROWS = 5
 /** How long a first load waits for the inspector before going without it. */
 const INSPECTOR_READY_MS = 1500
 /** How many stack frames an error carries into the log. */
@@ -2070,7 +2076,6 @@ const BROWSER_VERBS = {
   async network(params) {
     const { error, ...found } = requirePage(params)
     if (error) return error
-    if (params.requestId !== undefined) return responseBody(found, String(params.requestId))
     let rows = found.network
     // A failure is a non-2xx as much as it is a transport error; an agent
     // asking for "what went wrong" means both.
@@ -2080,7 +2085,7 @@ const BROWSER_VERBS = {
       if (test.error) return test.error
       rows = rows.filter(row => test.re.test(row.url))
     }
-    const shown = lastOf(rows, params.limit)
+    const shown = await withPreviews(found, lastOf(rows, params.limit))
     // Said once rather than marked on every line. A request the inspector
     // missed still appears — the other recorder saw it — but it has no id, so
     // its body cannot be asked for, and the fix is a word rather than a
@@ -2092,6 +2097,11 @@ const BROWSER_VERBS = {
       requests: shown,
       ...(bodiless ? { why: 'rows with no id were seen too early for the inspector; reload to make their bodies readable' } : {}),
     }
+  },
+
+  async body(params) {
+    const { error, ...found } = requirePage(params)
+    return error ?? responseBody(found, String(params.requestId ?? ''))
   },
 
   async viewport(params) {
@@ -2342,6 +2352,52 @@ async function responseBody(entry, requestId) {
   return text.length > BODY_MAX
     ? { ok: true, page: entry.id, truncated: true, text: text.slice(0, BODY_MAX) }
     : { ok: true, page: entry.id, text }
+}
+
+/**
+ * Puts the start of the interesting bodies into the request list.
+ *
+ * Because a status code can lie. A service that answers 200 with
+ * `{"error": …}` reads as a healthy request in any listing, and the agent
+ * that believes the listing goes looking for the bug in the arithmetic that
+ * consumed it. The body is the evidence, and evidence that has to be asked
+ * for separately is evidence that gets skipped — the model reaches for the
+ * shell it already knows instead.
+ *
+ * So a body the page had to parse, or one that failed, arrives with the list.
+ * Bounded on both axes: a few rows, a couple of hundred characters, and each
+ * row asked about once however often the list is read.
+ */
+async function withPreviews(entry, rows) {
+  if (!entry.inspectorNetwork) return rows
+  const wanted = rows.filter(row => row.id !== undefined && row[PREVIEWED] !== true && worthPreviewing(row))
+  // The newest few: an agent asking what just happened means the end of the
+  // list, and fetching every JSON response on a busy page would turn reading
+  // the log into a hundred round trips.
+  for (const row of wanted.slice(-PREVIEW_ROWS)) {
+    row[PREVIEWED] = true
+    const result = await inspectorCommand(entry.view.webContents, 'Network.getResponseBody', { requestId: row.id })
+      .catch(() => undefined)
+    if (!result || result.body === undefined) continue
+    const text = result.base64Encoded ? Buffer.from(result.body, 'base64').toString('utf8') : String(result.body)
+    const flat = text.replace(/\s+/g, ' ').trim()
+    if (flat) row.preview = flat.length > PREVIEW_MAX ? `${flat.slice(0, PREVIEW_MAX)}…` : flat
+  }
+  return rows
+}
+
+/**
+ * Whether a body belongs in the list unasked.
+ *
+ * JSON whatever its status, because that is the shape a page parses and the
+ * shape that lies; anything that failed, because the reason is in the body.
+ * Not the document itself and not assets — a listing full of HTML and CSS
+ * is a listing nobody reads. A transport error has no body at all.
+ */
+function worthPreviewing(row) {
+  if (row.error !== undefined) return false
+  if ((row.status ?? 0) >= 400) return true
+  return /json/i.test(row.mime ?? '')
 }
 
 /** One end of a drag: a ref, or a point, or the reason it is neither. */
