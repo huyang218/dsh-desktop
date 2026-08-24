@@ -66,7 +66,8 @@ import { createEngine } from './miniapp-engine.js'
 import { createEngine as createPhoneEngine } from './phone-engine.js'
 import { inspectPhones } from './phone-tool.js'
 import {
-  createAvd, hasJava, installCli, installPackages, installTools, LICENCE_URL, requiredPackages,
+  createAvd, hasJava, installCli, installPackages, installTools, LICENCE_URL, packageSizes,
+  requiredPackages, watchDownloads,
 } from './phone-install.js'
 import { deployBundledSkills } from './bundled-skills.js'
 import { isSourceLaunch } from './source-launch.js'
@@ -1955,44 +1956,92 @@ async function installAndroid(seen) {
   if (agreed.response !== 0) return
 
   state.phoneInstalling = true
+  state.phoneInstallAbort = new AbortController()
+  const { signal } = state.phoneInstallAbort
   buildMenu()
+  const window = openPhoneInstallWindow()
+  const say = update => {
+    if (window && !window.isDestroyed()) window.webContents.send('phone-install:state', update)
+  }
+  const step = key => { log(`android sdk: ${t(`phoneInstall.${key}`)}`); say({ step: t(`phoneInstall.${key}`) }) }
+
   try {
-    // Every tenth, not every chunk: these are hundreds of megabytes and the
-    // log is not a progress bar.
-    const tenths = what => {
-      let announced = 0
-      return (received, total) => {
-        const done = total ? Math.floor((received / total) * 10) : 0
-        if (done > announced) { announced = done; log(`android sdk: ${what} ${done * 10}%`) }
-      }
+    // Our own two downloads report their own bytes; the packages do not, and
+    // are watched on disk instead — see watchDownloads.
+    if (!seen.sdk) {
+      step('tools')
+      await installTools({ sdkRoot, signal, onProgress: (received, total) => say({ received, total }) })
     }
-    if (!seen.sdk) await installTools({ sdkRoot, onProgress: tenths('command-line tools') })
     if (seen.android !== 'noDevice') {
       // The tools no longer manage packages themselves; they forward to a CLI
       // they would otherwise bootstrap over a download this app cannot watch
       // fail. Fetched here so that a failure is one we can describe.
-      await installCli({ sdkRoot, onProgress: tenths('android cli') })
-      await installPackages({
-        sdkRoot,
-        packages: requiredPackages(),
-        agreed: true,
-        onLine: line => log(`android sdk: ${line}`),
-      })
+      step('cli')
+      await installCli({ sdkRoot, signal, onProgress: (received, total) => say({ received, total }) })
+
+      step('packages')
+      const packages = requiredPackages()
+      const { total } = await packageSizes(packages).catch(() => ({ total: 0 }))
+      say({ received: 0, total })
+      const stopWatching = watchDownloads({ sdkRoot, total, onProgress: say })
+      try {
+        await installPackages({
+          sdkRoot,
+          packages,
+          agreed: true,
+          signal,
+          onLine: line => { log(`android sdk: ${line}`); say({ line }) },
+        })
+      } finally {
+        stopWatching()
+      }
     }
-    await createAvd({ sdkRoot, name: AVD_NAME, onLine: line => log(`android sdk: ${line}`) })
+    step('avd')
+    await createAvd({ sdkRoot, name: AVD_NAME, onLine: line => { log(`android sdk: ${line}`); say({ line }) } })
     log('android sdk: ready')
-    await dialog.showMessageBox(state.window, {
-      type: 'info',
-      message: t('menu.phone'),
-      detail: t('dialog.phoneInstalled', { name: AVD_NAME }),
-      buttons: [t('button.ok')],
-    })
+    say({ step: t('dialog.phoneInstalled', { name: AVD_NAME }), done: true })
   } catch (error) {
-    errorDialog(t('dialog.phoneInstallFailed'), error)
+    const cancelled = signal.aborted
+    log(`android sdk: ${cancelled ? 'cancelled' : error?.message ?? error}`)
+    say({
+      step: cancelled ? t('phoneInstall.cancelled') : String(error?.message ?? error),
+      failed: true,
+    })
+    if (!cancelled) errorDialog(t('dialog.phoneInstallFailed'), error)
   } finally {
     state.phoneInstalling = false
+    state.phoneInstallAbort = undefined
     buildMenu()
   }
+}
+
+/**
+ * The window that shows an install happening.
+ *
+ * A window rather than a modal progress dialog, because this is minutes long
+ * and a modal over a long job is a thing the user cannot put away. It can be
+ * closed and the install carries on; the menu still says it is running.
+ */
+function openPhoneInstallWindow() {
+  const existing = state.phoneInstallWindow
+  if (existing && !existing.isDestroyed()) {
+    existing.show()
+    existing.focus()
+    return existing
+  }
+  const win = new BrowserWindow({
+    width: 560,
+    height: 380,
+    title: t('dialog.phoneLicenceTitle'),
+    ...ownedByMainWindow(),
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(here, 'phone-install-preload.cjs') },
+  })
+  if (process.platform !== 'darwin') win.removeMenu()
+  win.loadFile(path.join(here, '..', 'assets', 'phone-install.html'))
+  win.on('closed', () => { state.phoneInstallWindow = undefined })
+  state.phoneInstallWindow = win
+  return win
 }
 
 /** The remembered panel width, or a sensible one. */
@@ -3217,6 +3266,11 @@ async function npmRegistry() {
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
+  ipcMain.on('phone-install:cancel', () => { state.phoneInstallAbort?.abort() })
+  ipcMain.on('phone-install:close', () => {
+    const win = state.phoneInstallWindow
+    if (win && !win.isDestroyed()) win.close()
+  })
   ipcMain.on('i18n:strings', event => {
     event.returnValue = { locale: getLocale(), messages: messages() }
   })

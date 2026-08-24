@@ -49,8 +49,8 @@
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createWriteStream } from 'node:fs'
-import { chmod, mkdir, rename, rm, stat } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { chmod, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import { promisify } from 'node:util'
@@ -60,6 +60,23 @@ const run = promisify(execFile)
 /** Where Google publishes what it has, and where the archives sit. */
 const INDEX_URL = 'https://dl.google.com/android/repository/repository2-3.xml'
 const ARCHIVE_BASE = 'https://dl.google.com/android/repository/'
+
+/**
+ * Which index a package is listed in.
+ *
+ * Not all of them are in one. The tools, the emulator and the platforms are
+ * in the main index; system images are published per tag in their own, and
+ * looking for one in the wrong place finds nothing and says nothing — which
+ * is how a progress total ends up counting 413MB of a 2.1GB install and a bar
+ * that reaches 100% about a fifth of the way through.
+ *
+ * @param {string} sdkPath e.g. `system-images;android-35;google_apis;arm64-v8a`
+ * @returns {string}
+ */
+function indexFor(sdkPath) {
+  const image = /^system-images;[^;]+;([^;]+);/.exec(sdkPath)
+  return image ? `${ARCHIVE_BASE}sys-img/${image[1]}/sys-img2-3.xml` : INDEX_URL
+}
 
 /** The terms the SDK is offered under. */
 export const LICENCE_URL = 'https://developer.android.com/studio/terms'
@@ -100,10 +117,10 @@ export function androidCliPath(sdkRoot) {
  * @param {typeof fetch} [options.fetchImpl]
  * @returns {Promise<string>} the path it was written to
  */
-export async function installCli({ sdkRoot, onProgress, fetchImpl = fetch }) {
+export async function installCli({ sdkRoot, onProgress, fetchImpl = fetch, signal }) {
   const target = androidCliPath(sdkRoot)
   await mkdir(path.dirname(target), { recursive: true })
-  const { bytes, expected } = await downloadSized(androidCliUrl(), target, { fetchImpl, onProgress })
+  const { bytes, expected } = await downloadSized(androidCliUrl(), target, { fetchImpl, onProgress, signal })
   if (expected && bytes !== expected) {
     await rm(target, { force: true })
     throw new Error(`the Android CLI download stopped after ${bytes} of ${expected} bytes`
@@ -225,14 +242,14 @@ const hostOs = entry => /<host-os>([^<]+)<\/host-os>/.exec(entry)?.[1]
  * @param {typeof fetch} [options.fetchImpl]
  * @returns {Promise<{ sdkRoot: string }>}
  */
-export async function installTools({ sdkRoot, archive, onProgress, fetchImpl = fetch }) {
+export async function installTools({ sdkRoot, archive, onProgress, fetchImpl = fetch, signal }) {
   const wanted = archive ?? await resolveTools({ fetchImpl })
   const staging = `${sdkRoot}.staging`
   await rm(staging, { recursive: true, force: true })
   await mkdir(staging, { recursive: true })
   const zip = path.join(staging, 'cmdline-tools.zip')
 
-  const digest = await download(wanted.url, zip, { fetchImpl, onProgress })
+  const digest = await download(wanted.url, zip, { fetchImpl, onProgress, signal })
   if (digest !== wanted.sha1) {
     await rm(staging, { recursive: true, force: true })
     throw new Error('the downloaded command-line tools did not match the digest Google published for them')
@@ -274,9 +291,9 @@ export async function installTools({ sdkRoot, archive, onProgress, fetchImpl = f
  * @param {boolean} options.agreed what the user answered to the terms
  * @param {(line: string) => void} [options.onLine]
  */
-export async function installPackages({ sdkRoot, packages, agreed, onLine }) {
+export async function installPackages({ sdkRoot, packages, agreed, onLine, signal }) {
   if (!agreed) throw new Error('the Android SDK terms have not been accepted')
-  return androidCli({ sdkRoot, args: ['sdk', 'install', ...packages], onLine, timeout: 3_600_000 })
+  return androidCli({ sdkRoot, args: ['sdk', 'install', ...packages], onLine, signal, timeout: 3_600_000 })
 }
 
 /** What the SDK already has, as the CLI reports it. */
@@ -317,13 +334,14 @@ export async function createAvd({ sdkRoot, name, image = defaultImage(), onLine 
  * `sdkmanager` script — finds the copy this app downloaded rather than trying
  * to bootstrap its own.
  */
-async function androidCli({ sdkRoot, args, onLine, timeout }) {
+async function androidCli({ sdkRoot, args, onLine, timeout, signal }) {
   const binary = androidCliPath(sdkRoot)
   try {
     return await spawnText(binary, [`--sdk=${sdkRoot}`, ...args], {
       env: { ANDROID_HOME: sdkRoot, ANDROID_SDK_ROOT: sdkRoot, ANDROID_CLI_BIN: binary },
       onLine,
       timeout,
+      signal,
     })
   } catch (error) {
     // The CLI's own downloader fails this way behind some proxies, and its
@@ -337,6 +355,108 @@ async function androidCli({ sdkRoot, args, onLine, timeout }) {
 const TRUNCATED = /unexpected end of file|Failed to connect/i
 
 /**
+ * How big the packages about to be installed are.
+ *
+ * From the same index the tools read. Sizes matter here for one reason: the
+ * CLI that downloads them says nothing at all while it does — measured, two
+ * minutes of silence while two hundred megabytes arrived — so the only way to
+ * show progress is to watch the bytes land and compare them with a total
+ * somebody has to know in advance.
+ *
+ * @param {string[]} paths sdk-style paths, e.g. `system-images;android-35;…`
+ * @param {{fetchImpl?: typeof fetch, platform?: string, arch?: string}} [options]
+ * @returns {Promise<{total: number, byPath: Record<string, number>}>}
+ */
+export async function packageSizes(paths, { fetchImpl = fetch, platform = process.platform, arch = process.arch } = {}) {
+  const wantedOs = { darwin: 'macosx', win32: 'windows', linux: 'linux' }[platform]
+  const wantedArch = arch === 'arm64' ? 'aarch64' : 'x64'
+  const byPath = {}
+  let total = 0
+  /** @type {Map<string, string>} one fetch per index, however many packages want it */
+  const indexes = new Map()
+  for (const wanted of paths) {
+    const url = indexFor(wanted)
+    if (!indexes.has(url)) indexes.set(url, await getText(url, fetchImpl))
+    const xml = indexes.get(url)
+    const block = new RegExp(`<remotePackage path="${escapeForRegExp(wanted)}"[\\s\\S]*?</remotePackage>`).exec(xml)?.[0]
+    if (!block) continue
+    const archives = [...block.matchAll(/<archive>[\s\S]*?<\/archive>/g)].map(match => match[0])
+    // A package with no host-os at all is one archive for everybody, which is
+    // how the system images are published.
+    const found = archives.find(entry => {
+      const os = /<host-os>([^<]+)<\/host-os>/.exec(entry)?.[1]
+      if (os !== undefined && os !== wantedOs) return false
+      const host = /<host-arch>([^<]+)<\/host-arch>/.exec(entry)?.[1]
+      return host === undefined || host === wantedArch
+    }) ?? archives[0]
+    const size = Number(/<size>(\d+)<\/size>/.exec(found ?? '')?.[1] ?? 0)
+    if (size > 0) { byPath[wanted] = size; total += size }
+  }
+  return { total, byPath }
+}
+
+const escapeForRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/**
+ * Where the Android CLI puts a download while it is still arriving.
+ *
+ * `<sdk>/.sdk/arch/<sha1>.part`, found by looking rather than by being
+ * documented, and the only progress signal the CLI offers — it prints nothing
+ * to a pipe from the moment it starts until the moment it finishes.
+ */
+const PART_DIR = ['.sdk', 'arch']
+
+/**
+ * Watches an install happen, and reports how far along it is.
+ *
+ * Monotonic on purpose. A part file vanishes when its package is unpacked,
+ * and reporting the sum of what is on disk right now would send the bar
+ * backwards every time something completed — so a finished part is added to a
+ * running total instead, and progress only ever goes forwards.
+ *
+ * @param {object} options
+ * @param {string} options.sdkRoot
+ * @param {number} [options.total] expected bytes, from {@link packageSizes}
+ * @param {(state: {received: number, total: number}) => void} options.onProgress
+ * @param {number} [options.intervalMs]
+ * @returns {() => void} stops watching
+ */
+export function watchDownloads({ sdkRoot, total = 0, onProgress, intervalMs = 1_000 }) {
+  const dir = path.join(sdkRoot, ...PART_DIR)
+  /** @type {Map<string, number>} last seen size of each part still present */
+  let inFlight = new Map()
+  let finished = 0
+
+  const tick = async () => {
+    let entries
+    try {
+      entries = await readdir(dir)
+    } catch {
+      // The directory appears when the first download starts; before that
+      // there is nothing to report and nothing wrong.
+      return
+    }
+    const seen = new Map()
+    for (const name of entries.filter(entry => entry.endsWith('.part'))) {
+      const size = await stat(path.join(dir, name)).then(info => info.size, () => 0)
+      seen.set(name, size)
+    }
+    for (const [name, size] of inFlight) {
+      if (!seen.has(name)) finished += size
+    }
+    inFlight = seen
+    const received = finished + [...seen.values()].reduce((sum, size) => sum + size, 0)
+    onProgress({ received, total })
+  }
+
+  const timer = setInterval(() => { tick().catch(() => {}) }, intervalMs)
+  // `unref` so a watcher nobody stopped cannot hold the process open.
+  timer.unref?.()
+  tick().catch(() => {})
+  return () => { clearInterval(timer) }
+}
+
+/**
  * Runs a tool and streams its output a line at a time.
  *
  * These print progress for tens of minutes; collecting all of it and handing
@@ -344,17 +464,26 @@ const TRUNCATED = /unexpected end of file|Failed to connect/i
  *
  * @returns {Promise<string>} everything it said
  */
-function spawnText(binary, args, { env = {}, answer, onLine, timeout }) {
+function spawnText(binary, args, { env = {}, answer, onLine, timeout, signal }) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('cancelled'))
     const child = execFile(binary, args, {
       env: { ...process.env, ...env },
       timeout,
       maxBuffer: 32 * 1024 * 1024,
       encoding: 'utf8',
     }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${path.basename(binary)}: ${(stderr || stdout || error.message).trim().slice(0, 800)}`))
+      signal?.removeEventListener('abort', stop)
+      if (signal?.aborted) reject(new Error('cancelled'))
+      else if (error) reject(new Error(`${path.basename(binary)}: ${(stderr || stdout || error.message).trim().slice(0, 800)}`))
       else resolve(stdout)
     })
+    // Killed rather than left to finish: the point of cancelling a
+    // multi-gigabyte install is that it stops now. What is already on disk
+    // stays, and the CLI keeps its own part files, so resuming is what
+    // starting again does.
+    const stop = () => { try { child.kill('SIGTERM') } catch { /* gone */ } }
+    signal?.addEventListener('abort', stop, { once: true })
     if (answer !== undefined) child.stdin?.end(answer)
     let pending = ''
     for (const stream of [child.stdout, child.stderr]) {
@@ -374,10 +503,17 @@ function spawnText(binary, args, { env = {}, answer, onLine, timeout }) {
  *
  * @returns {Promise<{bytes: number, expected: number}>}
  */
-async function downloadSized(url, file, { fetchImpl, onProgress }) {
-  const response = await fetched(url, fetchImpl)
-  const expected = Number(response.headers.get('content-length')) || 0
-  let received = 0
+async function downloadSized(url, file, { fetchImpl, onProgress, signal }) {
+  const part = `${file}.part`
+  let already = await stat(part).then(info => info.size, () => 0)
+  const response = await fetched(url, fetchImpl, already > 0 ? { Range: `bytes=${already}-` } : undefined, signal)
+  const resuming = response.status === 206
+  if (already > 0 && !resuming) {
+    await rm(part, { force: true })
+    already = 0
+  }
+  const expected = (Number(response.headers.get('content-length')) || 0) + already
+  let received = already
   await pipeline(
     async function* () {
       for await (const chunk of response.body) {
@@ -386,17 +522,21 @@ async function downloadSized(url, file, { fetchImpl, onProgress }) {
         yield chunk
       }
     },
-    createWriteStream(file),
+    createWriteStream(part, resuming ? { flags: 'a' } : {}),
   )
+  await rename(part, file)
   return { bytes: received, expected }
 }
 
 /** One request, with a timeout on reaching the server and none on the body. */
-async function fetched(url, fetchImpl) {
+async function fetched(url, fetchImpl, headers, signal) {
   const controller = new AbortController()
   const timer = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
+  // The timeout applies to reaching the server; the caller's signal applies
+  // to the whole thing, including a transfer already in flight.
+  const combined = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal
   try {
-    const response = await fetchImpl(url, { redirect: 'follow', signal: controller.signal })
+    const response = await fetchImpl(url, { redirect: 'follow', signal: combined, headers })
     if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`)
     return response
   } finally {
@@ -404,20 +544,46 @@ async function fetched(url, fetchImpl) {
   }
 }
 
-/** @returns {Promise<string>} the sha1 of what was written */
-async function download(url, file, { fetchImpl, onProgress }) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
-  let response
-  try {
-    response = await fetchImpl(url, { redirect: 'follow', signal: controller.signal })
-  } finally {
-    clearTimeout(timer)
-  }
-  if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${url}`)
-  const total = Number(response.headers.get('content-length')) || 0
+/**
+ * Downloads to a `.part` beside the target, and picks up where it left off.
+ *
+ * A hundred and fifty megabytes is long enough for a laptop to sleep, a
+ * network to drop, or a user to quit the app — and starting again from zero
+ * each time is how a download on a bad connection never finishes at all. So
+ * the partial file stays, and the next attempt asks for the rest of it.
+ *
+ * The digest is over the whole file, so a resumed download has to hash what
+ * is already on disk before it can continue. That costs a read of the part —
+ * cheap next to fetching those bytes again, and the alternative is trusting a
+ * file this code did not watch arrive.
+ *
+ * A server that ignores the range and sends the whole thing answers 200
+ * rather than 206, and that is not an error: it is the same download without
+ * the shortcut, so the part is thrown away and it starts over.
+ *
+ * @returns {Promise<string>} the sha1 of what was written
+ */
+async function download(url, file, { fetchImpl, onProgress, signal }) {
+  const part = `${file}.part`
+  let already = await stat(part).then(info => info.size, () => 0)
   const hash = createHash('sha1')
-  let received = 0
+
+  const response = await fetched(url, fetchImpl, already > 0 ? { Range: `bytes=${already}-` } : undefined, signal)
+  const resuming = response.status === 206
+  if (already > 0 && !resuming) {
+    await rm(part, { force: true })
+    already = 0
+  }
+  if (resuming) {
+    // Everything already on disk is part of the digest, and only this side
+    // knows that — the server is sending the remainder and nothing else.
+    await pipeline(createReadStream(part), async function* (source) {
+      for await (const chunk of source) hash.update(chunk)
+    })
+  }
+
+  const total = (Number(response.headers.get('content-length')) || 0) + already
+  let received = already
   // Hashed as the bytes go past and never held: this is 150MB, and buffering
   // it to digest it afterwards would put that much in the main process.
   await pipeline(
@@ -429,8 +595,9 @@ async function download(url, file, { fetchImpl, onProgress }) {
         yield chunk
       }
     },
-    createWriteStream(file),
+    createWriteStream(part, resuming ? { flags: 'a' } : {}),
   )
+  await rename(part, file)
   return hash.digest('hex')
 }
 
