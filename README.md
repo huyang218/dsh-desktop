@@ -91,7 +91,9 @@ npm start
 
 The first launch installs `@deepseek-ai/dsh@latest` from npm (needs network, takes a few minutes). Data and logs live in the [data directory](#data-locations).
 
-On macOS a source run lives inside the unbranded Electron.app under `node_modules`, so the Dock tooltip reads **Electron**. That is expected, not a broken install. The icon is replaced at runtime; the name comes from that bundle, and only an installed build carries the right one.
+On macOS the first `npm start` uses the installed Electron distribution to create a branded development app under `node_modules/.cache/dsh-desktop-dev`. Later starts only refresh the current `src/` and `assets/` trees and renew the ad-hoc signature. The menu bar, Dock and window therefore all say **DeepSeek Harness** while still running the current source, without downloading Electron again. Use `npm run start:electron` only when debugging the raw host; that command is expected to show **Electron** in the menu bar.
+
+That development app carries its own bundle identifier so macOS never has to choose between it and an installed build, but it shares the [data directory](#data-locations) — which is the point, since it is usually there to debug real sessions. One consequence is worth knowing: only one of the two can run at a time, and because they now look identical, a `npm start` that finds an installed build already running stops with a message and a failing exit code instead of quietly bringing that other window forward. Quit it first. App updates are also switched off in a source run — the shell it downloads is one a source launch will not start — while runtime updates stay available.
 
 ### If `npm install` fails downloading Electron
 

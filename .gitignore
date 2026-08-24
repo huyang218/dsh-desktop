@@ -10,3 +10,7 @@ seed.tar
 
 # Browser-automation scratch output, written into the repo by the MCP tool
 .playwright-mcp/
+
+# Local scratch: rendered promos and HUD preview captures
+outputs/
+videos/

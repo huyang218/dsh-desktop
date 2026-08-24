@@ -63,14 +63,16 @@ import {
 import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
 import { registerBrowserTools } from './mcp-register.js'
 import { deployBundledSkills } from './bundled-skills.js'
+import { isSourceLaunch } from './source-launch.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const assets = path.join(here, '..', 'assets')
+const sourceLaunch = isSourceLaunch(app, here)
 
-// Only the packaged bundle carries the product name in its Info.plist; run
-// from source, Electron falls back to the package name and the app menu reads
-// "dsh-desktop". Safe to set because the data directory is pinned explicitly
-// on the next line rather than derived from this name.
+// Electron's internal name is used in native role labels and diagnostics. The
+// OS-level macOS name still comes from Info.plist; start-dev.mjs supplies a
+// branded development bundle for that half. Safe to set because the data
+// directory is pinned explicitly on the next line rather than derived from it.
 app.setName(BRAND.name)
 
 const locations = resolveLocations(app.getPath('appData'))
@@ -3835,9 +3837,16 @@ function actionItems() {
       ],
     },
     { type: 'separator' },
-    state.update
-      ? { label: t('menu.updating'), enabled: false }
-      : { label: t('menu.checkAppUpdate'), click: () => updateApp().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
+    // An app update staged from a source run is a bundle boot.js will refuse
+    // to start, so the dialog would promise a restart that changes nothing —
+    // and hand the installed app a new shell on the way past. The runtime
+    // update below stays: that one lands in the data directory and is exactly
+    // what a source run is usually here to exercise.
+    sourceLaunch
+      ? { label: t('menu.appUpdateSource'), enabled: false }
+      : state.update
+        ? { label: t('menu.updating'), enabled: false }
+        : { label: t('menu.checkAppUpdate'), click: () => updateApp().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
     state.update
       ? { label: t('menu.updating'), enabled: false }
       : { label: t('menu.checkUpdate'), click: () => updateRuntime().catch(e => errorDialog(t('dialog.updateFailed'), e)) },
@@ -3988,9 +3997,10 @@ function setUpdatePhase(phase, params = {}) {
 
 async function main() {
   initPaths()
-  // Run from source, the Dock shows the unbranded Electron.app this process
-  // actually lives in. The icon is the half that can be fixed at runtime; the
-  // Dock's tooltip stays "Electron" because it comes from that bundle.
+  // Only for `npm run start:electron`, which lives inside the unbranded
+  // Electron.app under node_modules. The icon is the half that can be fixed at
+  // runtime; the Dock's tooltip stays "Electron" because it comes from that
+  // bundle, which is what the branded development app exists to solve.
   if (!app.isPackaged) app.dock?.setIcon(path.join(assets, 'icon-1024.png'))
   // A saved choice wins; otherwise follow the system language, so a fresh
   // install opens in the user's own rather than in a default.
@@ -4080,7 +4090,7 @@ async function main() {
   try {
     // Packaged builds prefer the app-bundled Node; the system search is the
     // dev-mode path and the fallback for a missing/corrupt bundle.
-    state.toolchain = (app.isPackaged
+    state.toolchain = (!sourceLaunch
       ? ensureBundledToolchain({
         tarPath: path.join(process.resourcesPath, 'node-runtime.tgz'),
         versionFile: path.join(process.resourcesPath, 'node-runtime.version'),
@@ -4097,7 +4107,7 @@ async function main() {
       toolchain: state.toolchain,
       // Packaged builds carry a runtime snapshot in Resources/runtime-seed.tar,
       // so first launch deploys offline instead of downloading from npm.
-      seedTar: app.isPackaged ? path.join(process.resourcesPath, 'runtime-seed.tar') : undefined,
+      seedTar: !sourceLaunch ? path.join(process.resourcesPath, 'runtime-seed.tar') : undefined,
       log,
     })
     buildMenu()
@@ -4121,7 +4131,9 @@ async function main() {
   // racing the first paint would be the first thing a user sees, and the one
   // thing they did not come here for. It says nothing unless there is
   // something new, and nothing at all when the network is unreachable.
-  setTimeout(() => { updateApp({ silent: true }).catch(error => log(`silent update check: ${error?.message ?? error}`)) }, 30_000)
+  if (!sourceLaunch) {
+    setTimeout(() => { updateApp({ silent: true }).catch(error => log(`silent update check: ${error?.message ?? error}`)) }, 30_000)
+  }
 
   // The badge comes back if it was on screen when the app last closed. After
   // the window, not with it: it reads the server, and until the server is up
@@ -4150,7 +4162,17 @@ if (!locked) {
   // and an app that disappeared on its own and an app that was a second
   // instance handing over look identical from the outside.
   log('another instance owns the lock; handing over and exiting')
-  app.quit()
+  // For a source run it is worse than invisible. The instance being handed to
+  // wears the same name, the same icon and the same data directory, so the
+  // developer is left reading the installed build as though it were the code
+  // they just changed. Written to stderr, which is where `npm start` is
+  // looking, and with a failing exit code, because nothing they asked for ran.
+  if (sourceLaunch) {
+    process.stderr.write(`\n${BRAND.name} is already running — the installed build, or another source run.\n`
+      + `It owns ${locations.dataDir}; this launch exited without starting anything.\n`
+      + 'Quit that instance first, then run npm start again.\n\n')
+    app.exit(1)
+  } else app.quit()
 } else {
   app.on('second-instance', showWindow)
   app.on('activate', showWindow)

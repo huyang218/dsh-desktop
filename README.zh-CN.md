@@ -90,7 +90,9 @@ npm start
 
 首次启动会从 npm 安装 `@deepseek-ai/dsh@latest`(需要网络,耗时几分钟)。数据与日志见[数据位置](#数据位置)。
 
-macOS 上,源码运行的进程住在 `node_modules` 里那个未品牌化的 Electron.app 中,所以程序坞悬停显示的名字是 **Electron**——这是正常的,不是装错了。图标已在运行时换成应用自己的;名字来自那个 bundle,只有安装包里的应用才是对的。
+macOS 上,`npm start` 首次运行会用已安装的 Electron 在 `node_modules/.cache/dsh-desktop-dev` 生成一个品牌化开发 App,随后每次只同步当前 `src/`、`assets/` 并重新做 ad-hoc 签名。这样菜单栏、程序坞与窗口都显示 **DeepSeek Harness**,同时运行的仍是当前源码;这个步骤不会再次下载 Electron。若要直接使用原始 Electron.app 排查宿主问题,可运行 `npm run start:electron`,此时菜单栏显示 **Electron** 是预期行为。
+
+这个开发 App 有自己的 bundle identifier,macOS 不必在它和已安装版之间做选择;但[数据目录](#数据位置)是共用的——这正是它的用处,平时就是拿真实会话来调试的。由此有一点需要知道:两者同一时间只能跑一个,而现在它们外观完全一致,所以当 `npm start` 发现已安装版正在运行时,会打印一条说明并以非零码退出,而不是悄悄把那个窗口拉到前面。先退出它再启动。源码运行下应用更新也是关闭的——它下载的 shell 源码启动方式并不会去用——运行时更新仍然可用。
 
 ### 如果 `npm install` 卡在下载 Electron
 

@@ -28,7 +28,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "start": "electron .",
+    "start": "node scripts/start-dev.mjs",
+    "start:electron": "electron .",
     "seed": "node scripts/prepare-seed.mjs && node scripts/prepare-node.mjs",
     "predist": "npm run seed",
     "dist": "electron-builder --config electron-builder.config.cjs --dir --publish never",

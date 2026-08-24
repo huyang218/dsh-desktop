@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { appendFileSync } from 'node:fs'
 import { resolveLocations } from './locations.js'
 import { confirmBundle, discard, selectBundle, shellDirOf } from './shell-bundle.js'
+import { isSourceLaunch } from './source-launch.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const packaged = path.join(here, 'main.js')
@@ -38,7 +39,17 @@ function log(line) {
   } catch { /* logging must never take the app down */ }
 }
 
-const bundle = selectBundle(shellDir, { electronVersion: process.versions.electron, log })
+// A source checkout is the development shell. Letting a previously downloaded
+// hot update win here makes `npm start` exercise yesterday's installed code
+// instead of the files a developer is changing, which is both surprising and
+// especially misleading during UI/debug work. Packaged builds keep the normal
+// hot-update selection and rollback path.
+const sourceLaunch = isSourceLaunch(app, here)
+const bundle = !sourceLaunch
+  ? selectBundle(shellDir, { electronVersion: process.versions.electron, log })
+  : undefined
+
+if (sourceLaunch) log(`development launch: using source shell ${packaged}`)
 
 if (bundle) {
   // Announced rather than passed as an argument, because the shell that reads
