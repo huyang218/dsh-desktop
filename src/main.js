@@ -3820,10 +3820,20 @@ function pluginItems() {
 }
 
 /**
- * Everything that is not plugins. Plugins are a menu of their own in the
- * menu bar; the tray has no menu bar, so it nests the same items instead.
+ * The things this app can put a screen in front of the agent.
+ *
+ * A browser and a mini program simulator are the same kind of thing from
+ * here: something with a screen, opened and closed, that the agent drives
+ * through the same socket and the user watches. They were two loose items
+ * beside Settings until there were two of them, at which point the grouping
+ * is what says they are alternatives rather than unrelated features — and it
+ * is where a phone goes when there is one.
+ *
+ * The accelerator stays on the browser inside the submenu. A keystroke does
+ * not care how deeply its item is nested, and moving the browser one level
+ * down should not cost anyone the shortcut they already use.
  */
-function actionItems() {
+function deviceItems() {
   return [
     {
       label: `${state.panel ? '\u2713' : '\u2007\u2007'} ${t('menu.browser')}`,
@@ -3831,9 +3841,19 @@ function actionItems() {
       click: toggleBrowserPanel,
     },
     {
-      label: state.miniapp?.isOpen() ? t('menu.miniappClose') : t('menu.miniapp'),
+      label: `${state.miniapp?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.miniapp')}`,
       click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
     },
+  ]
+}
+
+/**
+ * Everything that is not plugins. Plugins are a menu of their own in the
+ * menu bar; the tray has no menu bar, so it nests the same items instead.
+ */
+function actionItems() {
+  return [
+    { label: t('menu.devices'), submenu: deviceItems() },
     { type: 'separator' },
     {
       label: t('menu.settings'),
