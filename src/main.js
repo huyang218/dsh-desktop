@@ -141,7 +141,10 @@ function initPaths() {
   paths.marketCache = path.join(userData, 'market-catalog.json')
   // An Android SDK this app installed for someone who had none. In the data
   // directory because it is ours to remove: a user who deletes this app
-  // should not be left with two gigabytes of somebody else's SDK.
+  // should not be left with two gigabytes of somebody else's SDK. The virtual
+  // device made from it is not here — `avdmanager` writes those to the user's
+  // own ~/.android/avd, which is where their tools look — so a removal leaves
+  // that behind, a few kilobytes pointing at an image that has gone.
   paths.androidSdk = path.join(userData, 'android-sdk')
   // Hot-updated shells, and the installers downloaded for the updates that
   // cannot be hot.

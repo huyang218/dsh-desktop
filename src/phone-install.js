@@ -318,7 +318,16 @@ export async function listInstalled({ sdkRoot, onLine }) {
  * Creates a virtual device from an installed system image.
  *
  * Still `avdmanager`: the new CLI took over package management and left this
- * where it was.
+ * where it was. It also, unlike that CLI, reports progress while it works.
+ *
+ * The device it writes lands in the user's own `~/.android/avd`, not inside
+ * the SDK — that is where every Android tool looks for it and where the
+ * user's other devices already live, so it is the right place. It does mean
+ * an SDK this app installed and later removes leaves its device behind,
+ * pointing at a system image that is gone. What is left is a few kilobytes of
+ * configuration rather than the gigabytes, which is why this is documented
+ * rather than worked around: hiding the device somewhere private would keep
+ * the user's own tools from seeing a phone they can use.
  *
  * @param {object} options
  * @param {string} options.sdkRoot
