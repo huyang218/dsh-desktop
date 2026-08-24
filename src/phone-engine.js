@@ -213,10 +213,17 @@ export function createEngine({ log } = {}) {
     },
 
     async launch({ package: name }) {
-      const out = await adb(['shell', 'monkey', '-p', name, '-c', 'android.intent.category.LAUNCHER', '1'])
-      if (/No activities found/i.test(out)) return fail(`${name} is not installed, or has nothing to launch`)
+      // Asked which activity, then told to start that one. `monkey` is the
+      // one-liner for this and a bad one: it prints its own arguments back on
+      // success, buries a failure in the same noise, and exits non-zero often
+      // enough that its exit code says nothing. Resolving first turns "that
+      // package has nothing to launch" into a sentence instead of a wall.
+      const resolved = await adb(['shell', 'cmd', 'package', 'resolve-activity', '--brief', String(name)])
+      const component = resolved.split('\n').map(line => line.trim()).filter(Boolean).pop()
+      if (!component?.includes('/')) return fail(`${name} is not installed, or has no launchable activity`)
+      await adb(['shell', 'am', 'start', '-n', component])
       await pause(1_000)
-      return { ok: true, result: `launched ${name}` }
+      return { ok: true, result: `launched ${component}` }
     },
 
     async logcat({ lines = DEFAULT_LOG_LINES, filter }) {
