@@ -244,13 +244,25 @@ const hostOs = entry => /<host-os>([^<]+)<\/host-os>/.exec(entry)?.[1]
  */
 export async function installTools({ sdkRoot, archive, onProgress, fetchImpl = fetch, signal }) {
   const wanted = archive ?? await resolveTools({ fetchImpl })
+  // Two directories, and the difference is the whole reason resuming works.
+  // The unpack area is wiped on every attempt, because a half-extracted tree
+  // is not something to build on. The download is not: the partial file is
+  // what the next attempt continues from, and putting it where the wipe
+  // reaches would make the resume machinery above dead code — which it was,
+  // until this was separated.
+  const downloads = `${sdkRoot}.download`
   const staging = `${sdkRoot}.staging`
+  await mkdir(downloads, { recursive: true })
   await rm(staging, { recursive: true, force: true })
   await mkdir(staging, { recursive: true })
-  const zip = path.join(staging, 'cmdline-tools.zip')
+  const zip = path.join(downloads, 'cmdline-tools.zip')
 
   const digest = await download(wanted.url, zip, { fetchImpl, onProgress, signal })
   if (digest !== wanted.sha1) {
+    // Thrown away rather than kept for the next attempt: a file that does not
+    // match its digest is not a partial download, it is a wrong one, and
+    // resuming it would fail the same way for ever.
+    await rm(downloads, { recursive: true, force: true })
     await rm(staging, { recursive: true, force: true })
     throw new Error('the downloaded command-line tools did not match the digest Google published for them')
   }
@@ -268,6 +280,7 @@ export async function installTools({ sdkRoot, archive, onProgress, fetchImpl = f
   await rm(destination, { recursive: true, force: true })
   await rename(unpacked, destination)
   await rm(staging, { recursive: true, force: true })
+  await rm(downloads, { recursive: true, force: true })
   return { sdkRoot }
 }
 
