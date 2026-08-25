@@ -3505,10 +3505,23 @@ async function npmRegistry() {
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
+  // Mirror input is serialized through one chain. A tap arms the focus a
+  // following keystroke needs, and the two arrive as separate IPC messages
+  // that would otherwise overlap — the type running before the tap it
+  // depended on. Queuing makes each gesture finish before the next starts,
+  // which is also just how a hand works: one thing at a time.
+  const mirrorInput = fn => { state.mirrorQueue = (state.mirrorQueue ?? Promise.resolve()).then(fn).catch(() => {}) }
   ipcMain.on('miniapp-mirror:tap', (_event, point) => {
     const x = Number(point?.x)
     const y = Number(point?.y)
-    if (Number.isFinite(x) && Number.isFinite(y)) state.miniapp?.tapPoint?.(x, y)
+    if (Number.isFinite(x) && Number.isFinite(y)) mirrorInput(() => state.miniapp?.tapPoint?.(x, y))
+  })
+  ipcMain.on('miniapp-mirror:type', (_event, message) => {
+    if (typeof message?.text === 'string') mirrorInput(() => state.miniapp?.typeIntoFocused?.(message.text))
+  })
+  ipcMain.on('miniapp-mirror:scroll', (_event, message) => {
+    const dy = Number(message?.dy)
+    if (Number.isFinite(dy) && dy !== 0) mirrorInput(() => state.miniapp?.scrollBy?.(dy))
   })
   ipcMain.on('phone-install:cancel', () => { state.phoneInstallAbort?.abort() })
   ipcMain.on('phone-install:close', () => {

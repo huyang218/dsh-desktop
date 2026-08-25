@@ -60,6 +60,38 @@ export function createEngine({ log, chosen } = {}) {
   let refs = new Map()
   /** When a verb last ran — what "idle" is measured from. */
   let lastUsed = Date.now()
+  /** The input element the last mirror tap landed on, for typing into. */
+  let focused
+  /**
+   * The focus resolution in flight, if a tap is still working one out.
+   *
+   * A person taps a field and types, with a human pause between; a test — or
+   * a very fast typist — can send the first key before the tap's async chain
+   * has settled `focused`. Typing awaits this so the keystroke lands in the
+   * field the click was aiming at rather than nowhere.
+   */
+  let focusing
+
+  /**
+   * The typeable element nearest a point, when a tap hit no tap-handler.
+   *
+   * An input or textarea is where the keyboard goes and carries no tap
+   * binding, so the tap path skips it; this finds it by the same
+   * point-in-rectangle match, so a tap on a field arms the next keystroke.
+   */
+  async function fieldAt(proj, route, x, y) {
+    const source = readWxml(proj, route)
+    if (source === undefined) return undefined
+    const fields = addressable(scan(source)).filter(item =>
+      (item.node.tag === 'input' || item.node.tag === 'textarea') && item.selector
+      && (item.node.handlers.input || item.node.handlers.change))
+    const { live: fresh } = await queryLive(fields)
+    // No slop: a field is focused only by a point actually within it.
+    const hit = nearestRect(fields, fresh, x, y, 0)
+    if (!hit) return undefined
+    return { tag: hit.node.tag, handlers: hit.node.handlers, dataset: hit.node.dataset, id: hit.node.attrs.id }
+  }
+
 
   const need = () => {
     if (!session || session.closed()) throw new Error('no simulator is open — run `open <project>` first')
@@ -402,11 +434,62 @@ export function createEngine({ log, chosen } = {}) {
       if (source === undefined) return undefined
       const found = addressable(scan(source)).filter(item => item.node.handlers.tap && item.selector)
       const { live } = await queryLive(found)
+      // A field the point falls inside wins over a tappable neighbour: a
+      // person aiming at an input means the input, even when a button ends a
+      // few pixels above it. So look for a containing field first, and only
+      // then for the nearest tap. Either way the previous focus is cleared —
+      // tapping anywhere is tapping away from the last field.
+      const resolving = fieldAt(project, here.route, x, y)
+      focusing = resolving
+      focused = await resolving
+      if (focusing === resolving) focusing = undefined
+      if (focused) { await settle(); return undefined }
       const hit = nearestTappable(found, live, x, y)
       if (!hit) return undefined
       await callHandler(hit.handler, hit.entry, { type: 'tap', detail: {} })
       await settle()
       return hit.handler
+    },
+
+    /**
+     * Types into whatever input the last mirror tap focused.
+     *
+     * A mini program input is driven by its own handler, not by keystrokes:
+     * the runtime hands the handler a `detail.value` that is the field's
+     * whole new contents. So the mirror accumulates what the user types and
+     * replays the full string each time, which is what the field would hold
+     * after that keystroke. The focused element is remembered from the tap
+     * that landed on it — a person taps a field, then types.
+     *
+     * @param {string} value the field's full text after this keystroke
+     * @returns {Promise<string | undefined>} the handler run
+     */
+    async typeIntoFocused(value) {
+      if (focusing) await focusing.catch(() => {})
+      if (!session || session.closed() || !focused) return undefined
+      lastUsed = Date.now()
+      const handler = focused.handlers.input ?? focused.handlers.change
+      if (!handler) return undefined
+      await callHandler(handler, focused, { type: 'input', detail: { value: String(value), cursor: String(value).length } })
+      await settle()
+      return handler
+    },
+
+    /**
+     * Scrolls the page by a delta, for a drag on the mirror.
+     *
+     * Page scroll rather than a synthesised touch: the render layer cannot be
+     * reached to dispatch touchmove, but the page's own scroll offset can be
+     * set, and a drag up or down is a scroll to almost everyone almost all
+     * the time. A scroll-view inside the page is not moved by this — that is
+     * a real limit, noted rather than papered over.
+     */
+    async scrollBy(dy) {
+      if (!session || session.closed()) return
+      lastUsed = Date.now()
+      const top = await evaluate(SCROLL_BY, [dy]).catch(() => undefined)
+      void top
+      await settle()
     },
 
     /**
@@ -538,7 +621,27 @@ function lookup(expression, data, loop, position) {
  *
  * @returns {{handler: string, entry: object} | undefined}
  */
-function nearestTappable(found, live, x, y, slop = 20) {
+function nearestTappable(found, live, x, y) {
+  const hit = nearestRect(found, live, x, y)
+  if (!hit) return undefined
+  return {
+    handler: hit.node.handlers.tap,
+    entry: { tag: hit.node.tag, handlers: hit.node.handlers, dataset: { ...hit.node.dataset, ...(hit.rect.dataset ?? {}) }, id: hit.rect.id ?? hit.node.attrs.id },
+  }
+}
+
+/**
+ * The addressable item whose live rectangle a point lands on, or the nearest
+ * within a finger's slop.
+ *
+ * Containment first: a point inside a rectangle picks that element, and when
+ * rectangles nest the smallest containing one wins — the specific thing under
+ * the finger rather than the panel behind it. With nothing containing the
+ * point, the closest rectangle within slop is taken; beyond that, nothing.
+ *
+ * @returns {{node: object, rect: object} | undefined}
+ */
+function nearestRect(found, live, x, y, slop = 20) {
   let best
   for (const item of found) {
     for (const rect of live.get(item.selector) ?? []) {
@@ -548,14 +651,9 @@ function nearestTappable(found, live, x, y, slop = 20) {
       const dy = Math.max(rect.top - y, 0, y - rect.bottom)
       const distance = Math.hypot(dx, dy)
       const area = Math.max(1, (rect.right - rect.left) * (rect.bottom - rect.top))
-      // Inside beats outside always; among inside, smaller area wins; among
-      // outside, nearer wins. One sortable key: inside contributes its area,
-      // outside a large offset plus its distance.
       const rank = inside ? area : 1e9 + distance
       if (!inside && distance > slop) continue
-      if (!best || rank < best.rank) {
-        best = { rank, handler: item.node.handlers.tap, entry: { tag: item.node.tag, handlers: item.node.handlers, dataset: { ...item.node.dataset, ...(rect.dataset ?? {}) }, id: rect.id ?? item.node.attrs.id } }
-      }
+      if (!best || rank < best.rank) best = { rank, node: item.node, rect }
     }
   }
   return best
@@ -635,6 +733,16 @@ const CALL_HANDLER = `function(name, event){
  * a list that grew between the two calls leaves labels that name rows the
  * geometry does not have.
  */
+const SCROLL_BY = `function(dy){
+  ${CURRENT_PAGE}
+  if (!page) return 0;
+  var top = 0;
+  try { top = (document.scrollingElement || document.documentElement).scrollTop || 0; } catch (e) {}
+  var next = Math.max(0, top + dy);
+  wx.pageScrollTo({ scrollTop: next, duration: 0 });
+  return next;
+}`
+
 const QUERY = `function(selectors){
   ${CURRENT_PAGE}
   const data = page ? page.data : {};

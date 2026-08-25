@@ -20,4 +20,6 @@ contextBridge.exposeInMainWorld('__dshMirror', {
     })
   },
   tap: (x, y) => ipcRenderer.send('miniapp-mirror:tap', { x, y }),
+  type: text => ipcRenderer.send('miniapp-mirror:type', { text }),
+  scroll: dy => ipcRenderer.send('miniapp-mirror:scroll', { dy }),
 })

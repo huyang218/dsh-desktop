@@ -24,7 +24,7 @@
 </style>
 </head>
 <body>
-  <img id="screen" alt="">
+  <img id="screen" alt="" tabindex="0">
   <div id="hint"></div>
 <script>
   const api = window.__dshMirror
@@ -46,20 +46,65 @@
     }
   })
 
-  img.addEventListener('click', event => {
-    if (!device) return
+  // Maps a window point to a device point, or null if outside the picture.
+  function toDevice(clientX, clientY) {
+    if (!device) return null
     const box = img.getBoundingClientRect()
-    // The rendered image is letterboxed inside its box by object-fit:contain;
-    // recover the real drawn rectangle so a click maps to the right pixel.
     const scale = Math.min(box.width / device.width, box.height / device.height)
     const drawnW = device.width * scale, drawnH = device.height * scale
     const offX = (box.width - drawnW) / 2, offY = (box.height - drawnH) / 2
-    const x = (event.clientX - box.left - offX) / scale
-    const y = (event.clientY - box.top - offY) / scale
-    if (x < 0 || y < 0 || x > device.width || y > device.height) return
-    flash(event.clientX, event.clientY)
-    api.tap(Math.round(x), Math.round(y))
+    const x = (clientX - box.left - offX) / scale
+    const y = (clientY - box.top - offY) / scale
+    if (x < 0 || y < 0 || x > device.width || y > device.height) return null
+    return { x: Math.round(x), y: Math.round(y), scale }
+  }
+
+  // A press that moves far enough is a drag (scroll); one that does not is a
+  // tap. Deciding on mouseup, from how far the pointer travelled, is what
+  // lets one gesture be both without a mode.
+  let press = null
+  const DRAG_THRESHOLD = 8
+
+  img.addEventListener('mousedown', event => {
+    const p = toDevice(event.clientX, event.clientY)
+    if (p) { press = { x: event.clientX, y: event.clientY, scale: p.scale }; img.focus() }
   })
+  img.addEventListener('mouseup', event => {
+    if (!press) return
+    const movedY = event.clientY - press.y
+    const movedX = event.clientX - press.x
+    const far = Math.abs(movedY) > DRAG_THRESHOLD || Math.abs(movedX) > DRAG_THRESHOLD
+    if (far) {
+      // Drag: scroll the page by the device-space vertical distance, in the
+      // natural direction — dragging the content up scrolls down.
+      api.scroll(Math.round(-movedY / press.scale))
+    } else {
+      const p = toDevice(event.clientX, event.clientY)
+      if (p) { flash(event.clientX, event.clientY); api.tap(p.x, p.y) }
+    }
+    press = null
+  })
+
+  // Keys go to whatever field the last tap focused. The mirror keeps the
+  // running text and sends the whole string, because a mini program input is
+  // driven by its full value, not by keystrokes — and it sends it once the
+  // typing pauses, not per key. Each send is a round trip to the phone, so
+  // per-key sending turns a fast sentence into a queue of laggy round trips;
+  // coalescing to the latest value keeps the field in step without the pileup.
+  let buffer = ''
+  let flush = null
+  const sendSoon = () => {
+    clearTimeout(flush)
+    flush = setTimeout(() => api.type(buffer), 120)
+  }
+  img.addEventListener('keydown', event => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return
+    if (event.key === 'Backspace') { buffer = buffer.slice(0, -1); sendSoon(); event.preventDefault(); return }
+    if (event.key === 'Enter') { clearTimeout(flush); api.type(buffer); event.preventDefault(); return }
+    if (event.key.length === 1) { buffer += event.key; sendSoon(); event.preventDefault() }
+  })
+  // A fresh tap starts a fresh field: clear the buffer whenever focus moves.
+  img.addEventListener('mousedown', () => { clearTimeout(flush); buffer = '' })
 
   function flash(x, y) {
     const dot = document.createElement('div')
