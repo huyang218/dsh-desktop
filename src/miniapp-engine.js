@@ -89,7 +89,9 @@ export function createEngine({ log, chosen } = {}) {
       project = found
       await watchLogs(session)
       await ready(session)
-      return { ok: true, project: found.name, appid: found.appid, ...await where() }
+      // `dir` rides along so the caller can remember which project this
+      // was — the menu reopens the last one by exactly this value.
+      return { ok: true, project: found.name, dir: found.dir, appid: found.appid, ...await where() }
     },
 
     async status() {

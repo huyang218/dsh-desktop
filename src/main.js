@@ -63,6 +63,7 @@ import {
 import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
 import { registerMcpTools, registerSkillLoader } from './mcp-register.js'
 import { createEngine } from './miniapp-engine.js'
+import { readProject } from './miniapp-project.js'
 import { createEngine as createPhoneEngine } from './phone-engine.js'
 import { inspectPhones, verifyAndroid } from './phone-tool.js'
 import {
@@ -1951,13 +1952,55 @@ async function toggleSimulator() {
     if (!result.ok) errorDialog(t('menu.miniapp'), new Error(result.why))
     return
   }
+
+  // The item says "simulator", so clicking it opens one — not a file
+  // dialog. A file dialog with no warning is a question the user did not
+  // ask; the project it wanted named is almost always the one from last
+  // time, and when there has never been a last time, the honest thing to
+  // open is the DevTools itself, where projects are made.
+  const last = readSettings().lastMiniappProject
+  if (typeof last === 'string' && readProject(last)) {
+    const result = await engine.run('open', { project: last }, process.cwd())
+    buildMenu()
+    if (!result.ok) errorDialog(t('dialog.miniappFailed'), new Error(result.why))
+    return
+  }
+  launchDevToolsPlain()
+}
+
+/**
+ * Opens the DevTools with no project — the IDE as an application.
+ *
+ * Through its own `cli open`, which fronts a running instance rather than
+ * starting a second one. No session is created here and none is claimed:
+ * the automation half only exists once a project is opened, so the menu's
+ * checkmark stays honest.
+ */
+function launchDevToolsPlain() {
+  const tool = findDevTools({ chosen: chosenDevTools() })
+  if (!tool) {
+    errorDialog(t('menu.miniapp'), new Error(t('dialog.devtoolsMissing')))
+    return
+  }
+  try {
+    const child = spawn(tool.cliPath, ['open'], { detached: true, stdio: 'ignore' })
+    child.unref()
+    log(`devtools: opened the IDE (${tool.installPath})`)
+  } catch (error) {
+    errorDialog(t('menu.miniapp'), error)
+  }
+}
+
+/** The old doorway, now labelled as what it is: choosing a project. */
+async function openMiniappProject() {
   const picked = await dialog.showOpenDialog(state.window, {
     title: t('dialog.pickMiniapp'),
     properties: ['openDirectory'],
+    defaultPath: readSettings().lastMiniappProject || undefined,
   })
   const directory = picked.filePaths?.[0]
   if (picked.canceled || !directory) return
-  const result = await engine.run('open', { project: directory }, process.cwd())
+  const result = await miniapp().run('open', { project: directory }, process.cwd())
   buildMenu()
   if (!result.ok) errorDialog(t('dialog.miniappFailed'), new Error(result.why))
 }
@@ -2950,7 +2993,12 @@ async function startOpenBridge() {
         // hundreds of elements and the log is for support, not for a
         // transcript of everything the agent looked at.
         log(`${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
-        // Opening or closing a simulator changes what the menu should say.
+        // Opening or closing a simulator changes what the menu should say —
+        // and a project opened by the agent is one the menu can reopen, so
+        // it is remembered from this doorway too, not only from its own.
+        if (op === `${MINIAPP_PREFIX}open` && result?.ok && typeof result.dir === 'string') {
+          writeSettings({ lastMiniappProject: result.dir })
+        }
         if (/\.(open|close)$/.test(op)) buildMenu()
         return result
       },
@@ -4207,6 +4255,10 @@ function deviceItems() {
     {
       label: `${state.miniapp?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.miniapp')}`,
       click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
+    },
+    {
+      label: t('menu.miniappProject'),
+      click: () => { openMiniappProject().catch(error => errorDialog(t('menu.miniapp'), error)) },
     },
     state.phoneInstalling
       ? { label: t('menu.phoneInstalling'), enabled: false }
