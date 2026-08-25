@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+  html, body { height: 100%; margin: 0; background: #0a0a0d; overflow: hidden; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font: 13px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif; color: #7a7a86;
+    -webkit-user-select: none; user-select: none;
+  }
+  #screen {
+    display: block; background: #000; cursor: pointer;
+    box-shadow: 0 8px 40px rgba(0,0,0,.6); border-radius: 6px;
+    max-width: 100%; max-height: 100%; object-fit: contain;
+  }
+  #hint { position: fixed; bottom: 10px; font-size: 11px; color: #55555f; }
+  #hint.gone { display: none; }
+  .flash { position: fixed; width: 26px; height: 26px; margin: -13px 0 0 -13px;
+    border: 2px solid #4c8dff; border-radius: 50%; pointer-events: none;
+    animation: ping .4s ease-out forwards; }
+  @keyframes ping { from { transform: scale(.4); opacity: .9; } to { transform: scale(1.4); opacity: 0; } }
+</style>
+</head>
+<body>
+  <img id="screen" alt="">
+  <div id="hint"></div>
+<script>
+  const api = window.__dshMirror
+  const img = document.getElementById('screen')
+  const hint = document.getElementById('hint')
+  hint.textContent = api?.strings?.hint ?? ''
+
+  // The phone's own pixel size, sent with the first frame. A click on the
+  // image is mapped back to these coordinates before it is sent — the image
+  // is scaled to fit the window, and the phone knows nothing of that scale.
+  let device = null
+
+  api?.onFrame(({ png, viewport }) => {
+    if (viewport) device = viewport
+    img.src = 'data:image/png;base64,' + png
+    if (hint.textContent && !hint.classList.contains('gone')) {
+      // Leave the hint up for a moment, then let the picture speak.
+      setTimeout(() => hint.classList.add('gone'), 4000)
+    }
+  })
+
+  img.addEventListener('click', event => {
+    if (!device) return
+    const box = img.getBoundingClientRect()
+    // The rendered image is letterboxed inside its box by object-fit:contain;
+    // recover the real drawn rectangle so a click maps to the right pixel.
+    const scale = Math.min(box.width / device.width, box.height / device.height)
+    const drawnW = device.width * scale, drawnH = device.height * scale
+    const offX = (box.width - drawnW) / 2, offY = (box.height - drawnH) / 2
+    const x = (event.clientX - box.left - offX) / scale
+    const y = (event.clientY - box.top - offY) / scale
+    if (x < 0 || y < 0 || x > device.width || y > device.height) return
+    flash(event.clientX, event.clientY)
+    api.tap(Math.round(x), Math.round(y))
+  })
+
+  function flash(x, y) {
+    const dot = document.createElement('div')
+    dot.className = 'flash'
+    dot.style.left = x + 'px'; dot.style.top = y + 'px'
+    document.body.appendChild(dot)
+    setTimeout(() => dot.remove(), 400)
+  }
+</script>
+</body>
+</html>

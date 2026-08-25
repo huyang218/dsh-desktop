@@ -355,6 +355,61 @@ export function createEngine({ log, chosen } = {}) {
       idleMs: Date.now() - lastUsed,
     }),
     /**
+     * One frame, as base64 PNG, or undefined when nothing is open.
+     *
+     * The mirror's hot path. It skips the verb machinery — no cwd, no result
+     * envelope, no file writing — because it runs many times a second and
+     * every one of those is a full round trip already.
+     */
+    async frame() {
+      if (!session || session.closed()) return undefined
+      const { data } = await session.send('App.captureScreenshot')
+      return data || undefined
+    },
+
+    /**
+     * The simulator's own pixel size, for mapping a click on the mirror back
+     * to a tap on the phone. Read from the running app rather than assumed,
+     * because it is the device the user chose, not a constant.
+     */
+    async viewport() {
+      if (!session || session.closed()) return undefined
+      const info = await session.send('App.callWxMethod', { method: 'getSystemInfoSync', args: [] })
+        .then(answer => answer?.result).catch(() => undefined)
+      if (!info) return undefined
+      return { width: info.windowWidth ?? info.screenWidth, height: info.windowHeight ?? info.screenHeight, ratio: info.pixelRatio ?? 1 }
+    },
+
+    /**
+     * Taps the actionable element nearest a point on the mirror.
+     *
+     * The user pointed at a pixel, not at a ref, and the render layer cannot
+     * be hit-tested from here — `Page.getElement` hangs on this DevTools, and
+     * the logic layer where `callFunction` runs has no DOM. So the point is
+     * resolved against the same source-plus-geometry the snapshot already
+     * builds: every tappable element has a live rectangle, and the one whose
+     * rectangle contains the point — or is closest to it — is the one a
+     * finger there would have hit. Its handler is then invoked the ordinary
+     * way. A point with nothing tappable near it does nothing, as it should.
+     *
+     * @returns {Promise<string | undefined>} the handler run, for feedback
+     */
+    async tapPoint(x, y) {
+      if (!session || session.closed()) return undefined
+      lastUsed = Date.now()
+      const here = await where()
+      const source = readWxml(project, here.route)
+      if (source === undefined) return undefined
+      const found = addressable(scan(source)).filter(item => item.node.handlers.tap && item.selector)
+      const { live } = await queryLive(found)
+      const hit = nearestTappable(found, live, x, y)
+      if (!hit) return undefined
+      await callHandler(hit.handler, hit.entry, { type: 'tap', detail: {} })
+      await settle()
+      return hit.handler
+    },
+
+    /**
      * Whether a simulator is open, answered without asking it.
      *
      * The menu is built synchronously and needs to know what its own item
@@ -469,6 +524,41 @@ function lookup(expression, data, loop, position) {
     parts.shift()
   }
   return parts.reduce((value, part) => (value == null ? undefined : value[part]), root)
+}
+
+/**
+ * The tappable element a point lands on, or the nearest one within reach.
+ *
+ * Containment first: a point inside a rectangle taps that element, and when
+ * rectangles nest, the smallest containing one wins — that is the specific
+ * thing under the finger rather than the panel behind it. With nothing
+ * containing the point, the closest rectangle within a finger's slop is
+ * taken, because a tap two pixels outside a button is a tap on the button.
+ * Beyond that, nothing.
+ *
+ * @returns {{handler: string, entry: object} | undefined}
+ */
+function nearestTappable(found, live, x, y, slop = 20) {
+  let best
+  for (const item of found) {
+    for (const rect of live.get(item.selector) ?? []) {
+      if (rect?.left === undefined) continue
+      const inside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+      const dx = Math.max(rect.left - x, 0, x - rect.right)
+      const dy = Math.max(rect.top - y, 0, y - rect.bottom)
+      const distance = Math.hypot(dx, dy)
+      const area = Math.max(1, (rect.right - rect.left) * (rect.bottom - rect.top))
+      // Inside beats outside always; among inside, smaller area wins; among
+      // outside, nearer wins. One sortable key: inside contributes its area,
+      // outside a large offset plus its distance.
+      const rank = inside ? area : 1e9 + distance
+      if (!inside && distance > slop) continue
+      if (!best || rank < best.rank) {
+        best = { rank, handler: item.node.handlers.tap, entry: { tag: item.node.tag, handlers: item.node.handlers, dataset: { ...item.node.dataset, ...(rect.dataset ?? {}) }, id: rect.id ?? item.node.attrs.id } }
+      }
+    }
+  }
+  return best
 }
 
 const indent = depth => '  '.repeat(Math.min(depth, 8))

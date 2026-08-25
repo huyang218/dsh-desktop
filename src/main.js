@@ -1983,6 +1983,79 @@ async function toggleSimulator() {
 }
 
 /**
+ * The live simulator, mirrored into a window the user can touch.
+ *
+ * The DevTools' own simulator sits behind a per-session token this app cannot
+ * hold, so its screen cannot simply be pointed at. What it will do is hand
+ * over a frame — `App.captureScreenshot`, measured at around eighteen a
+ * second — and take a tap by coordinate. So the mirror is exactly that loop:
+ * a window that shows the latest frame and turns a click on it into a tap on
+ * the phone. It is the agent's own two verbs, given a face.
+ *
+ * The polling lives here rather than in the engine because it is the window's
+ * appetite, not the simulator's: it runs while the window is open and stops
+ * when it closes, and a frame that arrives after the window has gone is
+ * dropped rather than sent to a destroyed view.
+ */
+function openMiniappMirror() {
+  const existing = state.miniappMirror
+  if (existing && !existing.win.isDestroyed()) {
+    existing.win.show()
+    existing.win.focus()
+    return
+  }
+  const win = new BrowserWindow({
+    width: 320,
+    height: 680,
+    title: t('menu.miniappMirror'),
+    ...ownedByMainWindow(),
+    autoHideMenuBar: true,
+    backgroundColor: '#0a0a0d',
+    webPreferences: { preload: path.join(here, 'miniapp-mirror-preload.cjs') },
+  })
+  if (process.platform !== 'darwin') win.removeMenu()
+  win.loadFile(path.join(here, '..', 'assets', 'miniapp-mirror.html'))
+
+  let stopped = false
+  let sentViewport
+  const engine = miniapp()
+
+  const pump = async () => {
+    while (!stopped && !win.isDestroyed()) {
+      try {
+        const png = await engine.frame()
+        if (stopped || win.isDestroyed()) break
+        if (!png) {
+          // Nothing open to mirror: the simulator was closed under us, so the
+          // window has served its purpose and goes too.
+          win.close()
+          break
+        }
+        // The size is sent once, with the frame it first applies to. It only
+        // changes if the device does, which mid-session it does not.
+        const viewport = sentViewport ? undefined : await engine.viewport()
+        if (viewport) sentViewport = viewport
+        win.webContents.send('miniapp-mirror:frame', { png, viewport })
+      } catch {
+        // A transient miss — a call that raced a close — is not fatal; the
+        // next tick tries again, and a real close ends the loop above.
+      }
+      await new Promise(resolve => { setTimeout(resolve, MIRROR_INTERVAL_MS) })
+    }
+  }
+
+  win.on('closed', () => {
+    stopped = true
+    state.miniappMirror = undefined
+  })
+  state.miniappMirror = { win, stop: () => { stopped = true } }
+  pump()
+}
+
+/** How often the mirror asks for a frame. ~18fps is the ceiling; this asks near it. */
+const MIRROR_INTERVAL_MS = 60
+
+/**
  * Starts a phone, or lets go of the one that is running.
  *
  * The choosing is done here rather than in the engine because it is a
@@ -2971,6 +3044,7 @@ async function startOpenBridge() {
         // transcript of everything the agent looked at.
         log(`${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
         // Opening or closing a simulator changes what the menu should say.
+        if (op === `${MINIAPP_PREFIX}close` && state.miniappMirror) state.miniappMirror.win.close()
         if (/\.(open|close)$/.test(op)) buildMenu()
         return result
       },
@@ -3431,6 +3505,11 @@ async function npmRegistry() {
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
+  ipcMain.on('miniapp-mirror:tap', (_event, point) => {
+    const x = Number(point?.x)
+    const y = Number(point?.y)
+    if (Number.isFinite(x) && Number.isFinite(y)) state.miniapp?.tapPoint?.(x, y)
+  })
   ipcMain.on('phone-install:cancel', () => { state.phoneInstallAbort?.abort() })
   ipcMain.on('phone-install:close', () => {
     const win = state.phoneInstallWindow
@@ -4228,6 +4307,10 @@ function deviceItems() {
       label: `${state.miniapp?.isOpen() || state.devtoolsLaunched ? '\u2713' : '\u2007\u2007'} ${t('menu.miniapp')}`,
       click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
     },
+    ...(state.miniapp?.isOpen() ? [{
+      label: t('menu.miniappMirror'),
+      click: () => { try { openMiniappMirror() } catch (error) { errorDialog(t('menu.miniappMirror'), error) } },
+    }] : []),
     state.phoneInstalling
       ? { label: t('menu.phoneInstalling'), enabled: false }
       : {
@@ -4718,6 +4801,8 @@ if (!locked) {
     state.openBridge = undefined
     // Nothing is awaited: a DevTools this app started is asked to quit, and
     // one it merely borrowed is left exactly as it was found.
+    if (state.miniappMirror && !state.miniappMirror.win.isDestroyed()) state.miniappMirror.win.destroy()
+    state.miniappMirror = undefined
     state.miniapp?.dispose()
     state.miniapp = undefined
     state.phone?.dispose()
