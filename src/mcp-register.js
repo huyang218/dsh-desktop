@@ -94,9 +94,17 @@ function renderBlock(name, command) {
     `        serverName: ${name}`,
     '        transport: stdio',
     `        command: ${JSON.stringify(command)}`,
+    // The fallbacks are load-bearing. Outside the app — a terminal `dsh`,
+    // a headless run — these variables are unset, an undefined value fails
+    // the row's config validation, and one invalid row takes the whole
+    // plugin tree down: dsh refuses to boot at all. An empty string passes
+    // validation, the server starts, and every call answers with why it
+    // cannot work, which is the difference between a degraded feature and
+    // an application that will not start.
+    '        failOnStartupError: false',
     '        env:',
-    '          DSH_DESKTOP_OPEN_SOCKET: !!js process.env.DSH_DESKTOP_OPEN_SOCKET',
-    '          DSH_DESKTOP_OPEN_TOKEN: !!js process.env.DSH_DESKTOP_OPEN_TOKEN',
+    "          DSH_DESKTOP_OPEN_SOCKET: !!js process.env.DSH_DESKTOP_OPEN_SOCKET ?? ''",
+    "          DSH_DESKTOP_OPEN_TOKEN: !!js process.env.DSH_DESKTOP_OPEN_TOKEN ?? ''",
     markers.end,
   ].join('\n')
 }
