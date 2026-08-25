@@ -58,6 +58,8 @@ export function createEngine({ log, chosen, managed } = {}) {
   let ios
   /** @type {Map<string, object>} */
   let refs = new Map()
+  /** When a verb last ran — what "idle" is measured from. */
+  let lastUsed = Date.now()
 
   const sdk = () => {
     const found = findAndroid({ chosen, managed })
@@ -377,6 +379,7 @@ export function createEngine({ log, chosen, managed } = {}) {
     async run(op, params, cwd) {
       const verb = verbs[op]
       if (!verb) return fail(`no such command "${op}"`)
+      lastUsed = Date.now()
       try {
         return await verb(params ?? {}, cwd)
       } catch (error) {
@@ -384,9 +387,31 @@ export function createEngine({ log, chosen, managed } = {}) {
       }
     },
     isOpen: () => Boolean(device || ios),
+
+    /** What an idle reaper needs to know; `ours` gates everything it does. */
+    idle: () => ({
+      open: Boolean(device || ios),
+      ours: device?.ours ?? false,
+      idleMs: Date.now() - lastUsed,
+    }),
+
+    /**
+     * For the app's own shutdown.
+     *
+     * An emulator this app booted is told to shut down — fire-and-forget,
+     * for the same reason the DevTools quit is: the app's exit must not
+     * wait on somebody else's. One that was already running, or an iOS
+     * simulator (which this app only ever looks at), is left as found.
+     * A gigabyte-scale process nobody asked to keep is exactly what
+     * "no orphans" was promised about.
+     */
     async dispose() {
-      // Nothing is shut down here: a phone takes a minute to boot and the
-      // user may well be looking at it. Letting go is enough.
+      if (device?.ours) {
+        try {
+          const child = execFile(findAndroid({ chosen, managed }).bin.adb, ['-s', device.serial, 'emu', 'kill'])
+          child.unref?.()
+        } catch { /* the SDK may be gone; so, then, is our standing to clean up */ }
+      }
       device = undefined
       ios = undefined
     },

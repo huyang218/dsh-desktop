@@ -34,7 +34,7 @@ import path from 'node:path'
 import { launch, ready } from './miniapp-connection.js'
 import { readProject } from './miniapp-project.js'
 import { DEFAULT_TEXT_MAX, DEFAULT_WAIT_MS, logLine } from './miniapp-ops.js'
-import { findDevTools, quitDevTools } from './miniapp-tool.js'
+import { findDevTools, quitDevTools, requestQuitDevTools } from './miniapp-tool.js'
 import { addressable, scan } from './miniapp-wxml.js'
 
 /** How many log entries are kept for `console` to return. */
@@ -58,6 +58,8 @@ export function createEngine({ log, chosen } = {}) {
   let logs = []
   /** @type {Map<string, object>} */
   let refs = new Map()
+  /** When a verb last ran — what "idle" is measured from. */
+  let lastUsed = Date.now()
 
   const need = () => {
     if (!session || session.closed()) throw new Error('no simulator is open — run `open <project>` first')
@@ -330,12 +332,26 @@ export function createEngine({ log, chosen } = {}) {
     async run(op, params, cwd) {
       const verb = verbs[op]
       if (!verb) return fail(`no such command "${op}"`)
+      lastUsed = Date.now()
       try {
         return await verb(params ?? {}, cwd)
       } catch (error) {
         return fail(error?.message ?? String(error))
       }
     },
+
+    /**
+     * What an idle reaper needs to know, and nothing it does not.
+     *
+     * `ours` gates everything: a DevTools the user already had open costs
+     * this app nothing to leave alone, and reclaiming memory that was never
+     * ours to spend is how a reaper becomes a nuisance.
+     */
+    idle: () => ({
+      open: Boolean(session && !session.closed()),
+      ours: session?.ours ?? false,
+      idleMs: Date.now() - lastUsed,
+    }),
     /**
      * Whether a simulator is open, answered without asking it.
      *
@@ -345,10 +361,21 @@ export function createEngine({ log, chosen } = {}) {
      */
     isOpen: () => Boolean(session && !session.closed()),
 
-    /** For the app's own shutdown: let go without asking the user anything. */
+    /**
+     * For the app's own shutdown.
+     *
+     * A DevTools this app started is asked to quit — fire-and-forget,
+     * because holding the app's own exit on another application's is the
+     * one thing shutdown must not do — and one that was merely borrowed is
+     * left exactly as it was found. This used to let go of both, which
+     * stranded a DevTools we had started as a dozen processes nobody was
+     * using and nothing would ever collect.
+     */
     async dispose() {
+      const owned = Boolean(session && !session.closed() && session.ours)
       if (session && !session.closed()) await session.close({ shutTool: false })
       session = undefined
+      if (owned) requestQuitDevTools()
     },
   }
 }

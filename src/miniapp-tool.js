@@ -27,7 +27,7 @@
  *
  * Electron-free, so it can be exercised under plain Node.
  */
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import net from 'node:net'
@@ -476,6 +476,24 @@ export async function quitDevTools(tool, { timeout = 15_000 } = {}) {
     await new Promise(resolve => { setTimeout(resolve, 500) })
   }
   return false
+}
+
+/**
+ * Asks the DevTools to quit, without waiting for the answer.
+ *
+ * {@link quitDevTools} asks and then polls until it is gone, which is right
+ * everywhere except the one place this exists for: the app's own shutdown,
+ * where blocking the quit on another application's exit would hold the
+ * user's window hostage. This fires the same platform quit request and
+ * returns; whether the DevTools obeys is its own affair by then.
+ */
+export function requestQuitDevTools() {
+  try {
+    const child = process.platform === 'win32'
+      ? spawn('taskkill', ['/IM', 'wechatdevtools.exe'], { detached: true, stdio: 'ignore' })
+      : spawn('osascript', ['-e', 'tell application id "com.tencent.webplusdevtools" to quit'], { detached: true, stdio: 'ignore' })
+    child.unref()
+  } catch { /* already gone, or no way to ask; the app is exiting either way */ }
 }
 
 /**

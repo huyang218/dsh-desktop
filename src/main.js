@@ -2153,6 +2153,42 @@ function openPhoneInstallWindow() {
   return win
 }
 
+/**
+ * Closes a simulator nobody is using.
+ *
+ * The two heavy surfaces are other people's programs: the DevTools is a
+ * dozen processes around a gigabyte, the emulator a couple more on its own,
+ * and an agent that opened one for a task has no reason to close it when the
+ * task moves on. So the app does, on one condition repeated everywhere the
+ * lifecycle is touched: only what this app started. A simulator the user
+ * opened themselves costs this app nothing to leave alone, however idle.
+ *
+ * Idle means "no verb has run", which is the only activity this process can
+ * see — a person clicking around inside the DevTools window is invisible
+ * from here. That is why the default is generous and the setting exists:
+ * the cost of reaping too early is a minute of reboot and a surprised user,
+ * and the cost of reaping too late is only memory.
+ */
+function reapIdleSimulators() {
+  const minutes = idleMinutes()
+  if (minutes <= 0 || state.quitting || state.phoneInstalling) return
+  const limit = minutes * 60_000
+  for (const [name, engine] of [['miniapp', state.miniapp], ['phone', state.phone]]) {
+    const info = engine?.idle?.()
+    if (!info?.open || !info.ours || info.idleMs < limit) continue
+    log(`${name}: closing after ${Math.round(info.idleMs / 60_000)} minutes idle`)
+    engine.run('close', {}, process.cwd())
+      .then(() => buildMenu())
+      .catch(error => log(`${name}: idle close failed: ${error?.message ?? error}`))
+  }
+}
+
+/** Minutes of silence before an owned simulator is closed; 0 keeps them. */
+function idleMinutes() {
+  const raw = readSettings().simulatorIdleMinutes
+  return Number.isFinite(raw) && raw >= 0 ? raw : 15
+}
+
 /** The remembered panel width, or a sensible one. */
 function panelWidth() {
   const saved = readSettings().previewPanelWidth
@@ -4180,6 +4216,16 @@ function deviceItems() {
       },
     { type: 'separator' },
     {
+      label: t('menu.idleClose'),
+      submenu: [5, 15, 30, 0].map(minutes => ({
+        label: `${idleMinutes() === minutes ? '\u2713' : '\u2007\u2007'} ${minutes === 0 ? t('idle.never') : t('idle.after', { minutes })}`,
+        click: () => {
+          writeSettings({ simulatorIdleMinutes: minutes })
+          buildMenu()
+        },
+      })),
+    },
+    {
       label: t('menu.locations'),
       submenu: [
         {
@@ -4631,6 +4677,11 @@ if (!locked) {
   // The tray owns app lifetime: a hidden window with a live server is the
   // resident state, so closing windows never quits by itself.
   app.on('window-all-closed', () => {})
+  // Once a minute, not on a deadline: the point is that an hour-old
+  // simulator is gone, not that a sixteenth minute is.
+  const reaper = setInterval(reapIdleSimulators, 60_000)
+  reaper.unref?.()
+
   app.on('before-quit', event => {
     if (state.quitting) return
     state.quitting = true

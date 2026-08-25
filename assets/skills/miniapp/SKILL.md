@@ -79,3 +79,6 @@ then read the handler's code.
   `wait /pages/detail/detail` waits for a navigation the app performs itself.
 - `close` only quits a DevTools this app started. One the user already had
   open is borrowed, and stays open — that is by design, not a failure.
+- An idle simulator may be closed automatically to give the memory back.
+  If a verb says nothing is open, `open` the project again and carry on —
+  nothing was lost but the boot time.

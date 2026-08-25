@@ -71,6 +71,8 @@ the flow another way.
 
 ## What not to do
 
+- An idle phone this app booted may be shut down automatically to give the
+  memory back. If a verb says nothing is open, `open` again and carry on.
 - Do not type credentials, card numbers, or other secrets into any device.
 - Do not sleep and hope; `snapshot` after an action answers what happened,
   and `logcat` answers why it did not.
