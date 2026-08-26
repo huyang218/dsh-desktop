@@ -5,7 +5,7 @@ Every released version, and what it changed. The notes attached to a
 section for that version, taken from this file by `scripts/release-notes.mjs`
 — so a release with nothing written here ships with nothing to read.
 
-## Unreleased
+## 0.2.0 — 2026-08-26
 
 - Find the mini program simulator, and say what is missing
 - Open a connection to the simulator, and say why when it will not open
