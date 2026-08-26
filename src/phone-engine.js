@@ -198,6 +198,13 @@ export function createEngine({ log, chosen, managed } = {}) {
       refs = new Map()
       if (!held.ours) return { ok: true, closed: 'the attachment; the phone was already running and is left alone' }
       await run(sdk().bin.adb, ['-s', held.serial, 'emu', 'kill'], { timeout: 30_000 }).catch(() => {})
+      // `emu kill` returns before the emulator process has finished exiting,
+      // and adb keeps listing the serial for a few seconds after — so a
+      // status query right after close would see it still there and report
+      // running. Wait until adb no longer sees it, within reason, so that
+      // close means closed to the next question. Bounded: a device that will
+      // not leave the list is not worth hanging the caller over.
+      await waitGone(held.serial)
       return { ok: true, closed: `the phone ${held.avd ?? held.serial}` }
     },
 
@@ -311,6 +318,23 @@ export function createEngine({ log, chosen, managed } = {}) {
       ok: true,
       why: `${match.name} is booted. iOS accepts no injected input, so this device can be looked at`
         + ' and started, and not tapped or typed into.',
+    }
+  }
+
+  /**
+   * Waits until adb stops listing a serial, or a short deadline passes.
+   *
+   * The mirror of waitForBoot: booting waits for the device to appear, and
+   * closing waits for it to disappear, because both `emu kill` and the boot
+   * are asynchronous underneath and "done" is a question for adb, not for the
+   * command that started the change.
+   */
+  async function waitGone(serial, timeout = 8_000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      const found = findAndroid({ chosen, managed })
+      if (!found || !found.targets.some(target => target.serial === serial)) return
+      await pause(400)
     }
   }
 

@@ -21,6 +21,7 @@ section for that version, taken from this file by `scripts/release-notes.mjs`
 - Let the user say where their tools already are
 - Reach the other phones, without picking one up uninvited
 - Ship the simulators' skills, and switch the loader on
+- Report a phone as closed once it is, not once it is asked to close
 
 ## 0.1.14 — 2026-08-24
 
