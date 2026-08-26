@@ -80,6 +80,9 @@ macOS 构建为 ad-hoc 签名、未公证,首次启动需在「系统设置 → 
 | **插件管理** | 在窗口里安装、更新、卸载 `dsh` 插件:npm 包名、GitHub 网页链接(含插件集合仓库里指向某个子包的 `…/tree/main/packages/xxx` 链接,例如 [dsh-plugins](https://github.com/huyang218/dsh-plugins))、`github:` spec、本地绝对路径,或直接选一个 zip 安装包——zip 会解压到 `<数据目录>/dsh-home/plugins/<包名>` 后按本地路径安装。已装插件会在后台按 npm 配置的注册表(尊重镜像)查一次新版本,有则标出。插件可随时停用/启用而不必卸载——停用写的是 loader 条目上的 `disabled: true`(运行时自带的机制),而不是 profile 的 bundle 列表,因为那个列表会被 `dsh plugin` 每次操作时按已安装状态重新对账。插件若导出配置 schema,会自动生成表单;填写的值写入 profile 的 `plugin-config.json`,并与停用状态一起镜像进 `cordis.patch.yml` 中带标记的托管块。 |
 | **性能浮标** | 菜单里开关的小号置顶窗口,显示此刻 harness 的开销:CPU、常驻内存、线程数,以及进程组里有几个进程。速率是真的速率——`ps` 的 CPU 是进程生命周期的平均值,对一个从周二起就没退出的服务来说那是关于过去的数字,所以这里采两次累计 CPU 时间除以两次之间的墙上时间。按整个进程组统计,因为 dsh 会调 pnpm、会委托别的 CLI,那些同样是开销。只在显示时采样。 |
 | **插件市场** | 独立窗口(菜单「插件 → 插件市场…」):读取 [DSH Market](https://dshplugin.market/) 的目录,可搜索、看星标与描述,一键安装。目录在本地缓存(6 小时内不再联网,可手动刷新),离线也能浏览。只有市场已核验、且从 npm 分发的条目提供一键安装;git 来源的条目只给出仓库链接,需要自行在「已安装」页手动安装。换源见[数据位置](#数据位置)中的 `marketCatalogUrl`。 |
+| **浏览器侧栏** | agent 刚写好的页面以前会丢给 Safari —— 和产生它的会话不在同一个应用里。现在它在聊天旁边的面板里打开,agent 还能操作它:导航、快照、点击、输入、读控制台和网络请求。同一套动词同时是命令行(`dsh-browser`)和 agent 工具(`mcp__browser__*`),全部通向壳持有的同一个 socket,所以 agent 能跑的任何东西 —— bash、脚本、插件 —— 摸到的都是同一个浏览器。 |
+| **小程序模拟器** | 驱动本机安装的微信开发者工具(其协议不允许打包分发,所以应用找到并驱动用户自己那份 —— 或在「模拟设备 → 模拟器位置」里指定的那份)。agent 以工具形式拿到模拟器(`mcp__miniapp__*`,命令行是 `dsh-miniapp`):打开项目、把页面读成带实时文案和几何的 ref、点击、输入,以及浏览器够不到的 —— 直接读写页面 data、直接调 `wx.*` API,想看的状态可以直接进入而不用一路点过去。应用自己启动的开发者工具在退出时被请退;用户本来就开着的只是借用,原样归还。 |
+| **手机模拟器** | Google 的 Android 模拟器,经 adb 驱动:启动虚拟设备、把屏幕从实时无障碍树读成 ref、点击、输入、滑动、装 APK、读 logcat(`mcp__phone__*`,命令行是 `dsh-phone`)。每次动作前都重读屏幕、按身份重新找到目标再触碰 —— 滚动过的列表点的是它现在的位置,已经不在的目标报告"不在了"而不是往旧坐标上按。没有 SDK 的机器会得到下载提议(约 2.1GB,可断点续传、可观测、可取消),前提是同意 Google 的条款 —— 应用绝不代替用户同意。第三方模拟器(MuMu、雷电、夜神…)和真机可以指名接入;不指名时,应用自己只会选虚拟设备。iOS 模拟器可以列出和启动,但 Apple 不提供注入输入的途径,所以只能看、不能驱动。 |
 
 ## 从源码运行
 
@@ -225,6 +228,9 @@ dsh-desktop/
 | `windowBounds` / `windowMaximized` | 窗口尺寸、位置与最大化状态,退出时记住 |
 | `proxy` | `{ mode, url, bypass }`,`mode` 为 `system`(默认)/`direct`/`manual`。在「设置 → 代理…」里改;`localhost`、`127.0.0.1`、`::1` 恒定直连,不必写进 `bypass`。 |
 | `marketCatalogUrl` | 插件市场目录地址,默认 `https://dshplugin.market/plugins.json`。换成自建或其他目录(例如 `https://awesome-dsh-plugin.com/plugins.json`)即可,改完在市场页点「刷新」。 |
+| `devtoolsPath` | 微信开发者工具的位置,不想让应用去猜时用。在「模拟设备 → 模拟器位置」里设置,保存前会先检查。 |
+| `androidSdk` | 手机模拟器使用的 Android SDK。同一菜单里设置,同样先检查;优先于 `ANDROID_HOME`。 |
+| `browserTools` / `miniappTools` / `phoneTools` | 任一设为 `false`,对应的一套就不再进入 agent 的工具。三种能力各自独立,可以逐个拒绝。 |
 
 ## 应用更新
 

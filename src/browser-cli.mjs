@@ -11,7 +11,7 @@
  */
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { call, resolveLocal } from './browser-client.mjs'
+import { call, resolveLocal } from './bridge-client.mjs'
 import { consoleLine, emptyLog, networkLine, OPS, parseArgs } from './browser-ops.js'
 
 const [verb, ...argv] = process.argv.slice(2)

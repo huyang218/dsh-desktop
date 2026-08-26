@@ -1,24 +1,25 @@
 /**
- * The browser as MCP tools.
+ * The phone as MCP tools.
  *
  * dsh's MCP client spawns this over stdio and registers what it advertises as
- * `mcp__browser__navigate`, `mcp__browser__click`, and so on — native tools
- * the model chooses between, rather than a command line it has to remember
- * the flags for. The tools are the table in browser-ops.js; this file is only
- * the wire.
+ * `mcp__phone__open`, `mcp__phone__tap`, and so on. The tools are the
+ * table in phone-ops.js; this file is only the wire, and it is the wire
+ * twice over — the model's call comes in as JSON-RPC on stdin and goes out to
+ * the app on its socket.
  *
- * Written against the protocol directly rather than against the MCP SDK: this
- * runs from a directory of copied files with no node_modules, and stdio MCP is
- * newline-delimited JSON-RPC — a hundred lines against a dependency the
- * deployment would have to grow a package manager to acquire.
+ * Written against the protocol directly rather than against the MCP SDK, for
+ * the reason {@link ./browser-mcp.mjs} gives: this runs from a directory of
+ * copied files with no node_modules.
  *
  * Not imported by the app. Run as a program, by the stub {@link ./open-bridge.js}
  * writes.
  */
 import { createInterface } from 'node:readline'
 import { call } from './bridge-client.mjs'
-import { consoleLine, emptyLog, mcpTools, networkLine, OPS } from './browser-ops.js'
+import { emptyLog, logLine, mcpTools, OPS } from './phone-ops.js'
 
+/** Every verb travels under this name; the app routes on it. */
+const PREFIX = 'phone.'
 /** What we answer with when the client names no version of its own. */
 const FALLBACK_PROTOCOL = '2024-11-05'
 
@@ -50,7 +51,7 @@ async function handle(message) {
     return reply(id, {
       protocolVersion: asked,
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: 'dsh-desktop-browser', version: '1' },
+      serverInfo: { name: 'dsh-desktop-phone', version: '1' },
     })
   }
   if (method === 'ping') return reply(id, {})
@@ -58,7 +59,7 @@ async function handle(message) {
   if (method === 'tools/call') {
     const name = params?.name
     if (!Object.hasOwn(OPS, name)) return fail(id, -32602, `no such tool "${name}"`)
-    const result = await call(name, params?.arguments ?? {})
+    const result = await call(PREFIX + name, params?.arguments ?? {})
     return reply(id, toolResult(result))
   }
   return fail(id, -32601, `unsupported method "${method}"`)
@@ -71,8 +72,8 @@ async function handle(message) {
  * into the model's context depends on the route it is calling on, and a tool
  * that says nothing to a text-only model is a tool that model cannot use.
  *
- * A refusal comes back as `isError` with the reason as its text — the model
- * is meant to read it and choose differently, which is why the reasons in the
+ * A refusal comes back as `isError` with the reason as its text — the model is
+ * meant to read it and choose differently, which is why the reasons in the
  * engine are sentences rather than codes.
  */
 function toolResult(result) {
@@ -89,24 +90,17 @@ function render(result) {
   const lines = []
   if (result.ok === false) lines.push(result.why ?? 'failed')
   else if (result.why) lines.push(`note: ${result.why}`)
-  if (result.page && result.url !== undefined) {
-    lines.push(`${result.page} ${result.url}${result.title ? ` — ${result.title}` : ''}${result.loading ? ' (still loading)' : ''}`)
-  }
-  if (result.coveredBy) lines.push(`note: the click landed on ${result.coveredBy}, which covers the target`)
-  if (result.scrolled !== undefined) {
-    lines.push(result.scrolled ? `scrolled ${result.scrolled}px${result.atEnd ? ' (at the end)' : ''}` : 'nothing scrolled; already at the end')
-  }
-  if (result.options) lines.push(`available: ${result.options.join(', ')}`)
-  if (result.elements) {
-    lines.push(...result.elements)
-    if (result.truncated) lines.push(`… truncated at ${result.elements.length} elements`)
-  }
-  if (result.text !== undefined) lines.push(result.text, ...(result.truncated ? ['… truncated'] : []))
+  if (result.state) lines.push(`${result.state}${result.serial ? ` (${result.serial})` : ''}`)
+  if (result.tapped) lines.push(`tapped ${result.tapped}`)
+  if (result.typed !== undefined) lines.push(`typed ${JSON.stringify(result.typed)}`)
+  if (result.pressed) lines.push(`pressed ${result.pressed}`)
+  if (result.swiped) lines.push(`swiped ${result.swiped}`)
+  if (result.elements) lines.push(result.elements)
   if (result.result !== undefined) lines.push(result.result)
-  if (result.messages) lines.push(...(result.messages.length ? result.messages.map(consoleLine) : [emptyLog('console output')]))
-  if (result.requests) lines.push(...(result.requests.length ? result.requests.map(networkLine) : [emptyLog('requests')]))
-  if (result.pages) lines.push(...result.pages.map(entry => `${entry.front ? '*' : ' '} ${entry.page} ${entry.url} — ${entry.title}`))
+  if (result.messages) {
+    lines.push(...(result.messages.length ? result.messages.map(logLine) : [emptyLog('log output')]))
+  }
   if (result.path) lines.push(`wrote ${result.path}`)
-  if (result.closed) lines.push(`closed ${result.closed === true ? 'the browser panel' : result.closed}`)
+  if (result.closed) lines.push(`closed ${result.closed}`)
   return lines.join('\n')
 }

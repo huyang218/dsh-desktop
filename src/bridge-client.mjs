@@ -1,10 +1,16 @@
 /**
- * The client half of the browser socket, shared by everything the agent runs.
+ * The client half of the app's socket, shared by everything the agent runs.
  *
- * `dsh-open`, `dsh-browser` and the MCP server are three faces of one call:
- * send a line of JSON, read a line of JSON. Keeping that in one module is
- * what keeps the three from disagreeing about the protocol — and the three
- * are copied into the same directory precisely so this import resolves.
+ * `dsh-open`, `dsh-browser`, `dsh-miniapp` and the two MCP servers are all
+ * faces of one call: send a line of JSON, read a line of JSON. Keeping that
+ * in one module is what keeps them from disagreeing about the protocol — and
+ * they are copied into the same directory precisely so this import resolves.
+ *
+ * One socket carries every feature, so the verb names have to stay apart.
+ * The browser's are bare — `navigate`, `snapshot`, `close` — because they
+ * were here first and are what `dsh-open` already sends; everything since is
+ * prefixed with its own name, and the app routes on that prefix. Without it
+ * `close` would mean two things, and so would half the table.
  *
  * Dependency-free and started fresh per call, because these are programs the
  * agent launches, not a service.
@@ -20,8 +26,15 @@ export function bridge() {
   }
 }
 
-/** The message every entry point prints when it is running outside the app. */
-export const NO_BRIDGE = 'no browser available (not running under the desktop app)'
+/**
+ * The message every entry point prints when it is running outside the app.
+ *
+ * Names the situation rather than one of the things unavailable in it. These
+ * commands are on the PATH of a process the desktop app started, so reaching
+ * this means the command was run from somewhere else — a plain terminal,
+ * usually — and what is missing is the app, not a browser or a simulator.
+ */
+export const NO_BRIDGE = 'not running under the desktop app, which is where this command\u2019s window lives'
 
 /**
  * Runs one verb.

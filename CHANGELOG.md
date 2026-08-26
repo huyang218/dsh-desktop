@@ -5,6 +5,24 @@ Every released version, and what it changed. The notes attached to a
 section for that version, taken from this file by `scripts/release-notes.mjs`
 — so a release with nothing written here ships with nothing to read.
 
+## 0.2.0 — 2026-08-26
+
+- Find the mini program simulator, and say what is missing
+- Open a connection to the simulator, and say why when it will not open
+- Describe a mini program page, and drive it
+- Let the agent read what the app says about itself
+- Put the simulator on the agent's PATH, and in the menu
+- Gather the screens under one menu
+- Find the phones this machine can pretend to have
+- Drive a phone, and re-find what you are about to touch
+- Offer to install an Android emulator for a machine that has none
+- Install through the tool the tools now forward to
+- Show the download happening, and let it be resumed
+- Let the user say where their tools already are
+- Reach the other phones, without picking one up uninvited
+- Ship the simulators' skills, and switch the loader on
+- Report a phone as closed once it is, not once it is asked to close
+
 ## 0.1.14 — 2026-08-24
 
 - Run the source from an app that says its own name

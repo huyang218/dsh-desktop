@@ -16,6 +16,10 @@
  * not how it travels.
  */
 
+import { parseArgs, toolSchemas } from './ops.js'
+
+export { parseArgs }
+
 /**
  * How many elements one snapshot may name.
  *
@@ -31,13 +35,7 @@ export const DEFAULT_WAIT_MS = 10_000
 
 const page = { type: 'string', description: 'Page id from `pages`. Defaults to the one on screen.' }
 
-/**
- * @typedef {object} Op
- * @property {string} summary what the model reads when choosing
- * @property {Record<string, object>} params JSON Schema properties
- * @property {string[]} [required]
- * @property {string[]} [positional] CLI argument order
- */
+/** @typedef {import('./ops.js').Op} Op */
 
 /** @type {Record<string, Op>} */
 export const OPS = {
@@ -241,18 +239,16 @@ export const OPS = {
   close: { summary: 'Close the browser panel and every page in it.', params: {} },
 }
 
-/** The tool list an MCP client receives. @returns {Array<object>} */
+/**
+ * The tool list an MCP client receives.
+ *
+ * A wrapper rather than a re-export: everything here has exactly one
+ * table to describe, and should not have to name it to say so.
+ *
+ * @returns {Array<object>}
+ */
 export function mcpTools() {
-  return Object.entries(OPS).map(([name, op]) => ({
-    name,
-    description: op.summary,
-    inputSchema: {
-      type: 'object',
-      properties: op.params,
-      ...(op.required ? { required: op.required } : {}),
-      additionalProperties: false,
-    },
-  }))
+  return toolSchemas(OPS)
 }
 
 /**
@@ -326,68 +322,3 @@ export function shortSource(source) {
   }
 }
 
-/**
- * Turns a command line into an op call.
- *
- * `dsh-browser type ref_3 "hello" --submit` — positional arguments in the
- * order the table declares, then `--flag` for the rest. A flag with no value
- * is `true`, which is what `--submit` and `--background` are for.
- *
- * @param {string[]} argv arguments after the verb
- * @param {Op} op
- * @returns {{ params: object } | { error: string }}
- */
-export function parseArgs(argv, op) {
-  const params = {}
-  const positional = []
-  for (let i = 0; i < argv.length; i += 1) {
-    const argument = argv[i]
-    if (!argument.startsWith('--')) { positional.push(argument); continue }
-    const [flag, inline] = splitFlag(argument.slice(2))
-    if (!(flag in op.params)) return { error: `unknown option --${flag}` }
-    if (inline !== undefined) { params[flag] = inline; continue }
-    // A boolean flag takes no value; anything else takes the next argument,
-    // and a value that looks like a flag means the user forgot one.
-    if (op.params[flag].type === 'boolean') { params[flag] = true; continue }
-    const value = argv[i + 1]
-    if (value === undefined || value.startsWith('--')) return { error: `--${flag} needs a value` }
-    params[flag] = value
-    i += 1
-  }
-  const slots = op.positional ?? []
-  if (positional.length > slots.length) return { error: `too many arguments for this command` }
-  positional.forEach((value, index) => { params[slots[index]] ??= value })
-  for (const name of op.required ?? []) {
-    if (params[name] === undefined) return { error: `missing ${name}` }
-  }
-  return { params: coerce(params, op) }
-}
-
-/** `--max=40` and `--max 40` mean the same thing. */
-function splitFlag(text) {
-  const equals = text.indexOf('=')
-  return equals === -1 ? [text, undefined] : [text.slice(0, equals), text.slice(equals + 1)]
-}
-
-/**
- * A command line is all strings; the schema says which ones are not.
- *
- * Done here rather than in the engine so that the MCP path — where the model
- * sends real JSON types — reaches the engine with exactly the same shapes as
- * the command line does.
- */
-function coerce(params, op) {
-  const out = {}
-  for (const [name, value] of Object.entries(params)) {
-    const type = op.params[name]?.type
-    if (type === 'integer' && typeof value === 'string') {
-      const number = Number.parseInt(value, 10)
-      out[name] = Number.isFinite(number) ? number : value
-    } else if (type === 'boolean' && typeof value === 'string') {
-      out[name] = value !== 'false' && value !== '0'
-    } else {
-      out[name] = value
-    }
-  }
-  return out
-}

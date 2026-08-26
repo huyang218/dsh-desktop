@@ -152,7 +152,7 @@ export function writeOpenCommand({ binDir, nodeBin, srcDir }) {
   mkdirSync(binDir, { recursive: true })
   // Every module the entry points import, copied together: they import each
   // other by relative path, so the whole set has to land in one directory.
-  for (const file of ['browser-client.mjs', 'browser-ops.js', 'open-shim.mjs', 'browser-cli.mjs', 'browser-mcp.mjs']) {
+  for (const file of COPIED) {
     copyFileSync(path.join(srcDir, file), path.join(binDir, file))
   }
   // Without this, Node reads the copied `.js` as CommonJS and its `import`
@@ -163,8 +163,36 @@ export function writeOpenCommand({ binDir, nodeBin, srcDir }) {
     'dsh-open': stub(binDir, nodeBin, 'dsh-open', 'open-shim.mjs'),
     'dsh-browser': stub(binDir, nodeBin, 'dsh-browser', 'browser-cli.mjs'),
     'dsh-browser-mcp': stub(binDir, nodeBin, 'dsh-browser-mcp', 'browser-mcp.mjs'),
+    'dsh-miniapp': stub(binDir, nodeBin, 'dsh-miniapp', 'miniapp-cli.mjs'),
+    'dsh-miniapp-mcp': stub(binDir, nodeBin, 'dsh-miniapp-mcp', 'miniapp-mcp.mjs'),
+    'dsh-phone': stub(binDir, nodeBin, 'dsh-phone', 'phone-cli.mjs'),
+    'dsh-phone-mcp': stub(binDir, nodeBin, 'dsh-phone-mcp', 'phone-mcp.mjs'),
   }
 }
+
+/**
+ * Every module the entry points reach, directly or through each other.
+ *
+ * A list rather than a walk of the import graph, because it is short and a
+ * walk would need a parser. It does have to be kept closed, though: a file
+ * that imports a sibling this list forgets is a command that works from the
+ * repository and fails from the copies, which is the packaged app and nowhere
+ * a test would look.
+ */
+const COPIED = [
+  'ops.js',
+  'bridge-client.mjs',
+  'browser-ops.js',
+  'open-shim.mjs',
+  'browser-cli.mjs',
+  'browser-mcp.mjs',
+  'miniapp-ops.js',
+  'miniapp-cli.mjs',
+  'miniapp-mcp.mjs',
+  'phone-ops.js',
+  'phone-cli.mjs',
+  'phone-mcp.mjs',
+]
 
 /** One command: a stub that runs the bundled Node against one of the copies. */
 function stub(binDir, nodeBin, name, entry) {

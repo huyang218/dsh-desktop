@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; gap: 14px; padding: 22px 24px; box-sizing: border-box;
+    background: #101014; color: #d5d5dc;
+    font: 14px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; color: #ececf2; }
+  .step { color: #d5d5dc; }
+  .bar { height: 6px; border-radius: 3px; background: #24242c; overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: #4c8dff; transition: width .3s ease; }
+  .bar.indeterminate > i {
+    width: 32%; background: linear-gradient(90deg, transparent, #4c8dff, transparent);
+    animation: sweep 1.4s linear infinite;
+  }
+  @keyframes sweep { from { transform: translateX(-110%); } to { transform: translateX(330%); } }
+  .numbers { display: flex; justify-content: space-between; color: #7a7a86; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .log {
+    flex: 1; min-height: 60px; overflow: auto; background: #08080b; border-radius: 6px; padding: 8px 10px;
+    font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; color: #6f6f7c; white-space: pre-wrap;
+    -webkit-user-select: text; user-select: text;
+  }
+  .row { display: flex; justify-content: flex-end; gap: 8px; }
+  button {
+    font: inherit; padding: 5px 14px; border-radius: 6px; border: 1px solid #34343e;
+    background: #1c1c22; color: #d5d5dc; cursor: pointer;
+  }
+  button:hover { background: #24242c; }
+  button:disabled { opacity: .45; cursor: default; }
+  .done { color: #6fcf80; }
+  .failed { color: #ff7a7a; }
+</style>
+</head>
+<body>
+  <h1 id="title"></h1>
+  <div class="step" id="step"></div>
+  <div class="bar" id="bar"><i id="fill"></i></div>
+  <div class="numbers"><span id="bytes"></span><span id="rate"></span></div>
+  <div class="log" id="log"></div>
+  <div class="row"><button id="action"></button></div>
+<script>
+  const api = window.__dshPhoneInstall
+  const S = api?.strings ?? {}
+  const el = id => document.getElementById(id)
+  el('title').textContent = S.title ?? ''
+  el('action').textContent = S.cancel ?? ''
+  document.title = S.title ?? ''
+  document.documentElement.lang = S.lang ?? 'zh-CN'
+
+  const mb = bytes => (bytes / 1048576).toFixed(0) + 'MB'
+  const gb = bytes => (bytes / 1073741824).toFixed(2) + 'GB'
+  const human = bytes => (bytes >= 1073741824 ? gb(bytes) : mb(bytes))
+
+  // Rate is measured over a window rather than since the start, because a
+  // download that stalled for a minute and recovered should not go on
+  // reporting the average that includes the stall.
+  const samples = []
+  let finished = false
+
+  function rate(received) {
+    const now = Date.now()
+    samples.push({ at: now, received })
+    while (samples.length > 2 && now - samples[0].at > 15000) samples.shift()
+    const first = samples[0]
+    const seconds = (now - first.at) / 1000
+    if (seconds < 2) return ''
+    const perSecond = (received - first.received) / seconds
+    if (perSecond <= 0) return S.stalled ?? ''
+    const left = Math.max(0, (window.__total || 0) - received)
+    const eta = left && perSecond ? Math.round(left / perSecond) : 0
+    const speed = (perSecond / 1048576).toFixed(1) + 'MB/s'
+    if (!eta) return speed
+    const minutes = Math.floor(eta / 60)
+    return `${speed} · ${S.remaining ?? ''} ${minutes ? minutes + 'm ' : ''}${eta % 60}s`
+  }
+
+  api?.onState(state => {
+    if (state.step) el('step').textContent = state.step
+    if (state.line) {
+      const log = el('log')
+      log.textContent += (log.textContent ? '\n' : '') + state.line
+      log.scrollTop = log.scrollHeight
+    }
+    if (state.total) window.__total = state.total
+    if (state.received !== undefined) {
+      const total = window.__total || 0
+      el('bar').classList.toggle('indeterminate', !total)
+      if (total) {
+        el('fill').style.width = Math.min(100, (state.received / total) * 100).toFixed(1) + '%'
+        el('bytes').textContent = `${human(state.received)} / ${human(total)}`
+      } else {
+        el('bytes').textContent = human(state.received)
+      }
+      el('rate').textContent = rate(state.received)
+    }
+    if (state.done || state.failed) {
+      finished = true
+      el('bar').classList.remove('indeterminate')
+      if (state.done) { el('fill').style.width = '100%'; el('step').className = 'step done' }
+      if (state.failed) el('step').className = 'step failed'
+      el('rate').textContent = ''
+      el('action').textContent = S.close ?? ''
+    }
+  })
+
+  el('action').addEventListener('click', () => {
+    if (finished) { api?.close(); return }
+    el('action').disabled = true
+    el('step').textContent = S.cancelling ?? ''
+    api?.cancel()
+  })
+</script>
+</body>
+</html>

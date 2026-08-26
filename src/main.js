@@ -61,7 +61,14 @@ import {
   textScript, waitScript,
 } from './browser-page.js'
 import { bridgeAddress, mintToken, startBridge, writeOpenCommand } from './open-bridge.js'
-import { registerBrowserTools } from './mcp-register.js'
+import { registerMcpTools, registerSkillLoader } from './mcp-register.js'
+import { createEngine } from './miniapp-engine.js'
+import { createEngine as createPhoneEngine } from './phone-engine.js'
+import { inspectPhones, verifyAndroid } from './phone-tool.js'
+import {
+  createAvd, hasJava, installCli, installPackages, installTools, LICENCE_URL, packageSizes,
+  requiredPackages, watchDownloads,
+} from './phone-install.js'
 import { deployBundledSkills } from './bundled-skills.js'
 import { isSourceLaunch } from './source-launch.js'
 
@@ -132,6 +139,13 @@ function initPaths() {
   // a few hundred entries rather than the multi-megabyte document they came
   // from. It is a cache: deleting it costs one refresh.
   paths.marketCache = path.join(userData, 'market-catalog.json')
+  // An Android SDK this app installed for someone who had none. In the data
+  // directory because it is ours to remove: a user who deletes this app
+  // should not be left with two gigabytes of somebody else's SDK. The virtual
+  // device made from it is not here — `avdmanager` writes those to the user's
+  // own ~/.android/avd, which is where their tools look — so a removal leaves
+  // that behind, a few kilobytes pointing at an image that has gone.
+  paths.androidSdk = path.join(userData, 'android-sdk')
   // Hot-updated shells, and the installers downloaded for the updates that
   // cannot be hot.
   paths.shellDir = shellDirOf(locations.dataDir)
@@ -1748,13 +1762,33 @@ function bundledSkillEnv() {
  *
  * @param {string} command the MCP stub's absolute path
  */
-async function registerTools(command) {
-  const wanted = readSettings().browserTools !== false
-  const outcome = await registerBrowserTools({
-    patchPath: path.join(paths.dshHome, 'cordis.patch.yml'),
-    ...(wanted ? { command } : {}),
-  }).catch(error => `failed: ${error?.message ?? error}`)
-  if (outcome !== 'unchanged') log(`browser tools ${outcome}`)
+async function registerTools(commands) {
+  const settings = readSettings()
+  const patchPath = path.join(paths.dshHome, 'cordis.patch.yml')
+  // Each surface is its own row and its own switch. They are separate
+  // capabilities — a browser that shares the user's logins and a simulator
+  // that drives somebody else's application are worth being able to refuse
+  // one at a time.
+  const servers = [
+    { name: 'browser', setting: 'browserTools', stub: commands['dsh-browser-mcp'] },
+    { name: 'miniapp', setting: 'miniappTools', stub: commands['dsh-miniapp-mcp'] },
+    { name: 'phone', setting: 'phoneTools', stub: commands['dsh-phone-mcp'] },
+  ]
+  // The loader first: tool rows offer the surfaces, and this is what makes
+  // the skills describing them — and the user's own installed skills — load
+  // at all.
+  const loader = await registerSkillLoader({ patchPath })
+    .catch(error => `failed: ${error?.message ?? error}`)
+  if (loader !== 'unchanged') log(`skill loader ${loader}`)
+  for (const { name, setting, stub } of servers) {
+    const wanted = settings[setting] !== false
+    const outcome = await registerMcpTools({
+      patchPath,
+      name,
+      ...(wanted ? { command: stub } : {}),
+    }).catch(error => `failed: ${error?.message ?? error}`)
+    if (outcome !== 'unchanged') log(`${name} tools ${outcome}`)
+  }
 }
 
 /**
@@ -1774,6 +1808,478 @@ function toggleBrowserPanel() {
   const entry = createPage()
   entry.view.webContents.loadURL('about:blank').catch(() => {})
   showWindow()
+}
+
+/**
+ * Where the user said their tools are.
+ *
+ * Read at the point of use rather than held, because the point of a setting
+ * is that changing it takes effect — and the engines that consume this are
+ * long-lived.
+ */
+const chosenAndroid = () => readSettings().androidSdk
+const chosenDevTools = () => readSettings().devtoolsPath
+
+/**
+ * Asks which Android SDK to use, checks it, and says what it found.
+ *
+ * A picker on its own would be a setting that fails later, somewhere else,
+ * with a message about a missing `adb`. So the directory is judged while the
+ * user is still standing in front of it, and the answer names what is there
+ * and what is not — a usable SDK, or one that needs an image, or a directory
+ * that is not an SDK at all.
+ */
+async function chooseAndroidSdk() {
+  const picked = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickAndroidSdk'),
+    properties: ['openDirectory'],
+    defaultPath: chosenAndroid() || undefined,
+    message: t('dialog.pickAndroidSdkHint'),
+  })
+  const directory = picked.filePaths?.[0]
+  if (picked.canceled || !directory) return
+
+  const found = verifyAndroid(directory)
+  if (!found.root) {
+    await dialog.showMessageBox(state.window, {
+      type: 'warning',
+      message: t('dialog.androidSdkBad'),
+      detail: t('dialog.androidSdkNotOne', { dir: directory }),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+
+  writeSettings({ androidSdk: found.root })
+  // The engine caches what it was told; dropping it is how the next call
+  // picks up the location that was just chosen, without a restart.
+  state.phone?.dispose()
+  state.phone = undefined
+  buildMenu()
+  log(`android sdk: using ${found.root}`)
+
+  // Usable is usable: nothing more is needed for the agent's tools, which are
+  // already mounted, so the answer says so rather than implying another step.
+  const detail = found.ok
+    ? t('dialog.androidSdkReady', { dir: found.root, images: found.images.join(', '), avds: found.avds.join(', ') })
+    : t('dialog.androidSdkIncomplete', {
+      dir: found.root,
+      missing: found.missing.map(part => t(`dialog.androidMissing.${part}`)).join('、'),
+    })
+  await dialog.showMessageBox(state.window, {
+    type: found.ok ? 'info' : 'warning',
+    message: found.ok ? t('dialog.androidSdkOk') : t('dialog.androidSdkBad'),
+    detail,
+    buttons: [t('button.ok')],
+  })
+}
+
+/** The same, for the WeChat DevTools. */
+async function chooseDevToolsPath() {
+  const picked = await dialog.showOpenDialog(state.window, {
+    title: t('dialog.pickDevTools'),
+    // The DevTools is an application bundle on macOS and a directory on
+    // Windows, and a picker that only takes one of those refuses the right
+    // answer on the other platform.
+    properties: process.platform === 'darwin' ? ['openFile', 'openDirectory'] : ['openDirectory'],
+    defaultPath: chosenDevTools() || (process.platform === 'darwin' ? '/Applications' : undefined),
+  })
+  const directory = picked.filePaths?.[0]
+  if (picked.canceled || !directory) return
+
+  const found = verifyDevTools(directory)
+  if (!found) {
+    await dialog.showMessageBox(state.window, {
+      type: 'warning',
+      message: t('dialog.devtoolsBad'),
+      detail: t('dialog.devtoolsNotOne', { dir: directory }),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+  writeSettings({ devtoolsPath: found.installPath })
+  state.miniapp?.dispose()
+  state.miniapp = undefined
+  buildMenu()
+  log(`devtools: using ${found.installPath}`)
+  await dialog.showMessageBox(state.window, {
+    type: 'info',
+    message: t('dialog.devtoolsOk'),
+    detail: t('dialog.devtoolsReady', { dir: found.installPath, version: found.version }),
+    buttons: [t('button.ok')],
+  })
+}
+
+/** Verbs bound for the mini program simulator rather than the browser. */
+const MINIAPP_PREFIX = 'miniapp.'
+/** Verbs bound for the phone. */
+const PHONE_PREFIX = 'phone.'
+/** What a virtual device this app creates is called. */
+const AVD_NAME = 'dsh-phone'
+
+/**
+ * The simulator engine, made when something first asks for it.
+ *
+ * Lazily, because it starts nothing on its own: an app that never opens a
+ * mini program should never have looked for a DevTools, and most launches
+ * never will.
+ */
+function miniapp() {
+  state.miniapp ??= createEngine({ log, chosen: chosenDevTools() })
+  return state.miniapp
+}
+
+/** The phone engine, on the same terms. */
+function phone() {
+  state.phone ??= createPhoneEngine({ log, chosen: chosenAndroid(), managed: paths.androidSdk })
+  return state.phone
+}
+
+/**
+ * Opens a project in the simulator, or lets go of the one that is open.
+ *
+ * The menu's half of what the agent reaches through the socket, and the same
+ * engine underneath — so a simulator opened from here is the one the agent
+ * then drives, rather than a second of its own.
+ */
+async function toggleSimulator() {
+  const engine = miniapp()
+  // The engine's session first: a simulator the agent is driving closes
+  // through the engine, which knows whether the DevTools is ours to quit.
+  if (engine.isOpen()) {
+    const result = await engine.run('close', {}, process.cwd())
+    state.devtoolsLaunched = false
+    buildMenu()
+    if (!result.ok) errorDialog(t('menu.miniapp'), new Error(result.why))
+    return
+  }
+  const tool = findDevTools({ chosen: chosenDevTools() })
+  if (!tool) {
+    errorDialog(t('menu.miniapp'), new Error(t('dialog.devtoolsMissing')))
+    return
+  }
+  if (state.devtoolsLaunched) {
+    // Checked because this menu opened it plain; the second click closes it.
+    // A person clicking close is not the reaper — the ours rule guards
+    // against automatic closes, not against the user asking.
+    state.devtoolsLaunched = false
+    buildMenu()
+    await quitDevTools(tool)
+    return
+  }
+  // Projects are none of this item's business. The agent opens them over
+  // the socket, and a person opens them inside the IDE — which is what
+  // `cli open` shows them, fronting a running instance rather than
+  // starting a second one.
+  try {
+    const child = spawn(tool.cliPath, ['open'], { detached: true, stdio: 'ignore' })
+    child.unref()
+    state.devtoolsLaunched = true
+    buildMenu()
+    log(`devtools: opened the IDE (${tool.installPath})`)
+  } catch (error) {
+    errorDialog(t('menu.miniapp'), error)
+  }
+}
+
+/**
+ * The live simulator, mirrored into a window the user can touch.
+ *
+ * The DevTools' own simulator sits behind a per-session token this app cannot
+ * hold, so its screen cannot simply be pointed at. What it will do is hand
+ * over a frame — `App.captureScreenshot`, measured at around eighteen a
+ * second — and take a tap by coordinate. So the mirror is exactly that loop:
+ * a window that shows the latest frame and turns a click on it into a tap on
+ * the phone. It is the agent's own two verbs, given a face.
+ *
+ * The polling lives here rather than in the engine because it is the window's
+ * appetite, not the simulator's: it runs while the window is open and stops
+ * when it closes, and a frame that arrives after the window has gone is
+ * dropped rather than sent to a destroyed view.
+ */
+function openMiniappMirror() {
+  const existing = state.miniappMirror
+  if (existing && !existing.win.isDestroyed()) {
+    existing.win.show()
+    existing.win.focus()
+    return
+  }
+  const win = new BrowserWindow({
+    width: 320,
+    height: 680,
+    title: t('menu.miniappMirror'),
+    ...ownedByMainWindow(),
+    autoHideMenuBar: true,
+    backgroundColor: '#0a0a0d',
+    webPreferences: { preload: path.join(here, 'miniapp-mirror-preload.cjs') },
+  })
+  if (process.platform !== 'darwin') win.removeMenu()
+  win.loadFile(path.join(here, '..', 'assets', 'miniapp-mirror.html'))
+
+  let stopped = false
+  let sentViewport
+  const engine = miniapp()
+
+  const pump = async () => {
+    while (!stopped && !win.isDestroyed()) {
+      try {
+        const png = await engine.frame()
+        if (stopped || win.isDestroyed()) break
+        if (!png) {
+          // Nothing open to mirror: the simulator was closed under us, so the
+          // window has served its purpose and goes too.
+          win.close()
+          break
+        }
+        // The size is sent once, with the frame it first applies to. It only
+        // changes if the device does, which mid-session it does not.
+        const viewport = sentViewport ? undefined : await engine.viewport()
+        if (viewport) sentViewport = viewport
+        win.webContents.send('miniapp-mirror:frame', { png, viewport })
+      } catch {
+        // A transient miss — a call that raced a close — is not fatal; the
+        // next tick tries again, and a real close ends the loop above.
+      }
+      await new Promise(resolve => { setTimeout(resolve, MIRROR_INTERVAL_MS) })
+    }
+  }
+
+  win.on('closed', () => {
+    stopped = true
+    state.miniappMirror = undefined
+  })
+  state.miniappMirror = { win, stop: () => { stopped = true } }
+  pump()
+}
+
+/** How often the mirror asks for a frame. ~18fps is the ceiling; this asks near it. */
+const MIRROR_INTERVAL_MS = 60
+
+/**
+ * Starts a phone, or lets go of the one that is running.
+ *
+ * The choosing is done here rather than in the engine because it is a
+ * conversation: which device, and — when there is no device to choose — what
+ * would have to be downloaded first. The engine answers questions; a dialog
+ * is what asks one.
+ */
+async function togglePhone() {
+  const engine = phone()
+  if (engine.isOpen()) {
+    const result = await engine.run('close', {}, process.cwd())
+    buildMenu()
+    if (!result.ok) errorDialog(t('menu.phone'), new Error(result.why))
+    return
+  }
+
+  const seen = inspectPhones({ chosen: chosenAndroid(), managed: paths.androidSdk })
+  if (seen.android === 'ready') {
+    const result = await engine.run('open', {}, process.cwd())
+    buildMenu()
+    if (!result.ok) errorDialog(t('dialog.phoneFailed'), new Error(result.why))
+    return
+  }
+  if (seen.android !== 'stopped') {
+    // Nothing to start. Which of the three reasons it is decides what the
+    // offer should be, so the reason is what gets shown rather than a blanket
+    // "unavailable" — see the ladder in phone-tool.js.
+    const asked = await dialog.showMessageBox(state.window, {
+      type: 'info',
+      message: t('menu.phone'),
+      detail: t(`dialog.phone.${seen.android}`),
+      buttons: [t('button.install'), t('button.cancel')],
+      cancelId: 1,
+      defaultId: 0,
+    })
+    if (asked.response === 0) await installAndroid(seen)
+    return
+  }
+
+  const avds = seen.sdk?.avds ?? []
+  let chosen = avds[0]
+  if (avds.length > 1) {
+    // Buttons rather than a list window: a handful of names is what this is,
+    // and a whole window for four buttons is a window to dismiss.
+    const picked = await dialog.showMessageBox(state.window, {
+      type: 'question',
+      message: t('dialog.phonePick'),
+      buttons: [...avds.slice(0, 6), t('button.cancel')],
+      cancelId: Math.min(avds.length, 6),
+    })
+    if (picked.response >= Math.min(avds.length, 6)) return
+    chosen = avds[picked.response]
+  }
+  const result = await engine.run('open', { avd: chosen }, process.cwd())
+  buildMenu()
+  if (!result.ok) errorDialog(t('dialog.phoneFailed'), new Error(result.why))
+}
+
+/**
+ * Downloads an Android SDK, with the user's agreement to Google's terms.
+ *
+ * The agreement is the reason this is a flow and not a button. `sdkmanager`
+ * will not install anything until its licences are accepted, it accepts them
+ * from stdin, and this app could therefore send a `y` and never mention it.
+ * That would make a contract between the user and Google into something that
+ * happened while they were looking elsewhere. So the terms are named, the
+ * size is named, the directory it lands in is named, and none of it starts
+ * until somebody has read that and pressed the button.
+ *
+ * Progress goes to the log rather than to a progress bar. This is minutes of
+ * downloading and unpacking, the menu says it is happening, and a modal
+ * progress window over a long job is a window the user cannot put away.
+ *
+ * @param {import('./phone-tool.js').PhoneInspection} seen
+ */
+async function installAndroid(seen) {
+  if (state.phoneInstalling) return
+  if (!await hasJava()) {
+    await dialog.showMessageBox(state.window, {
+      type: 'warning',
+      message: t('menu.phone'),
+      detail: t('dialog.phoneNoJava'),
+      buttons: [t('button.ok')],
+    })
+    return
+  }
+
+  // Into the user's own SDK when they have one — that is where their images
+  // already live and where they would install the missing one themselves —
+  // and into ours only when there is nothing to add to.
+  const sdkRoot = seen.sdk?.root ?? paths.androidSdk
+  const agreed = await dialog.showMessageBox(state.window, {
+    type: 'question',
+    message: t('dialog.phoneLicenceTitle'),
+    detail: t('dialog.phoneLicence', { url: LICENCE_URL, dir: sdkRoot }),
+    buttons: [t('button.agreeInstall'), t('button.cancel')],
+    cancelId: 1,
+    defaultId: 1,
+  })
+  if (agreed.response !== 0) return
+
+  state.phoneInstalling = true
+  state.phoneInstallAbort = new AbortController()
+  const { signal } = state.phoneInstallAbort
+  buildMenu()
+  const window = openPhoneInstallWindow()
+  const say = update => {
+    if (window && !window.isDestroyed()) window.webContents.send('phone-install:state', update)
+  }
+  const step = key => { log(`android sdk: ${t(`phoneInstall.${key}`)}`); say({ step: t(`phoneInstall.${key}`) }) }
+
+  try {
+    // Our own two downloads report their own bytes; the packages do not, and
+    // are watched on disk instead — see watchDownloads.
+    if (!seen.sdk) {
+      step('tools')
+      await installTools({ sdkRoot, signal, onProgress: (received, total) => say({ received, total }) })
+    }
+    if (seen.android !== 'noDevice') {
+      // The tools no longer manage packages themselves; they forward to a CLI
+      // they would otherwise bootstrap over a download this app cannot watch
+      // fail. Fetched here so that a failure is one we can describe.
+      step('cli')
+      await installCli({ sdkRoot, signal, onProgress: (received, total) => say({ received, total }) })
+
+      step('packages')
+      const packages = requiredPackages()
+      const { total } = await packageSizes(packages).catch(() => ({ total: 0 }))
+      say({ received: 0, total })
+      const stopWatching = watchDownloads({ sdkRoot, total, onProgress: say })
+      try {
+        await installPackages({
+          sdkRoot,
+          packages,
+          agreed: true,
+          signal,
+          onLine: line => { log(`android sdk: ${line}`); say({ line }) },
+        })
+      } finally {
+        stopWatching()
+      }
+    }
+    step('avd')
+    await createAvd({ sdkRoot, name: AVD_NAME, onLine: line => { log(`android sdk: ${line}`); say({ line }) } })
+    log('android sdk: ready')
+    say({ step: t('dialog.phoneInstalled', { name: AVD_NAME }), done: true })
+  } catch (error) {
+    const cancelled = signal.aborted
+    log(`android sdk: ${cancelled ? 'cancelled' : error?.message ?? error}`)
+    say({
+      step: cancelled ? t('phoneInstall.cancelled') : String(error?.message ?? error),
+      failed: true,
+    })
+    if (!cancelled) errorDialog(t('dialog.phoneInstallFailed'), error)
+  } finally {
+    state.phoneInstalling = false
+    state.phoneInstallAbort = undefined
+    buildMenu()
+  }
+}
+
+/**
+ * The window that shows an install happening.
+ *
+ * A window rather than a modal progress dialog, because this is minutes long
+ * and a modal over a long job is a thing the user cannot put away. It can be
+ * closed and the install carries on; the menu still says it is running.
+ */
+function openPhoneInstallWindow() {
+  const existing = state.phoneInstallWindow
+  if (existing && !existing.isDestroyed()) {
+    existing.show()
+    existing.focus()
+    return existing
+  }
+  const win = new BrowserWindow({
+    width: 560,
+    height: 380,
+    title: t('dialog.phoneLicenceTitle'),
+    ...ownedByMainWindow(),
+    autoHideMenuBar: true,
+    webPreferences: { preload: path.join(here, 'phone-install-preload.cjs') },
+  })
+  if (process.platform !== 'darwin') win.removeMenu()
+  win.loadFile(path.join(here, '..', 'assets', 'phone-install.html'))
+  win.on('closed', () => { state.phoneInstallWindow = undefined })
+  state.phoneInstallWindow = win
+  return win
+}
+
+/**
+ * Closes a simulator nobody is using.
+ *
+ * The two heavy surfaces are other people's programs: the DevTools is a
+ * dozen processes around a gigabyte, the emulator a couple more on its own,
+ * and an agent that opened one for a task has no reason to close it when the
+ * task moves on. So the app does, on one condition repeated everywhere the
+ * lifecycle is touched: only what this app started. A simulator the user
+ * opened themselves costs this app nothing to leave alone, however idle.
+ *
+ * Idle means "no verb has run", which is the only activity this process can
+ * see — a person clicking around inside the DevTools window is invisible
+ * from here. That is why the default is generous and the setting exists:
+ * the cost of reaping too early is a minute of reboot and a surprised user,
+ * and the cost of reaping too late is only memory.
+ */
+function reapIdleSimulators() {
+  const minutes = idleMinutes()
+  if (minutes <= 0 || state.quitting || state.phoneInstalling) return
+  const limit = minutes * 60_000
+  for (const [name, engine] of [['miniapp', state.miniapp], ['phone', state.phone]]) {
+    const info = engine?.idle?.()
+    if (!info?.open || !info.ours || info.idleMs < limit) continue
+    log(`${name}: closing after ${Math.round(info.idleMs / 60_000)} minutes idle`)
+    engine.run('close', {}, process.cwd())
+      .then(() => buildMenu())
+      .catch(error => log(`${name}: idle close failed: ${error?.message ?? error}`))
+  }
+}
+
+/** Minutes of silence before an owned simulator is closed; 0 keeps them. */
+function idleMinutes() {
+  const raw = readSettings().simulatorIdleMinutes
+  return Number.isFinite(raw) && raw >= 0 ? raw : 15
 }
 
 /** The remembered panel width, or a sensible one. */
@@ -2523,18 +3029,29 @@ async function startOpenBridge() {
     state.openBridge = await startBridge({
       address,
       token,
-      run: async (op, params) => {
-        const result = await runBrowserOp(op, params)
+      run: async (op, params, cwd) => {
+        // One socket, two surfaces. The browser's verbs are bare because they
+        // were here first and `dsh-open` already sends them that way;
+        // everything since carries its own prefix. Without one, `close` and
+        // `navigate` and half the rest would each mean two things.
+        const result = op.startsWith(MINIAPP_PREFIX)
+          ? await miniapp().run(op.slice(MINIAPP_PREFIX.length), params, cwd)
+          : op.startsWith(PHONE_PREFIX)
+            ? await phone().run(op.slice(PHONE_PREFIX.length), params, cwd)
+            : await runBrowserOp(op, params)
         // One line per call, and the answer is not in it: a snapshot is
         // hundreds of elements and the log is for support, not for a
         // transcript of everything the agent looked at.
-        log(`browser ${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
+        log(`${op}${params?.url ? ` ${params.url}` : ''}${result?.ok === false ? `: ${result.why}` : ''}`)
+        // Opening or closing a simulator changes what the menu should say.
+        if (op === `${MINIAPP_PREFIX}close` && state.miniappMirror) state.miniappMirror.win.close()
+        if (/\.(open|close)$/.test(op)) buildMenu()
         return result
       },
       log,
     })
     const commands = writeOpenCommand({ binDir: paths.binDir, nodeBin: state.toolchain.nodeBin, srcDir: here })
-    await registerTools(commands['dsh-browser-mcp'])
+    await registerTools(commands)
     return { DSH_DESKTOP_OPEN_SOCKET: address, DSH_DESKTOP_OPEN_TOKEN: token, ...bundledSkillEnv() }
   } catch (error) {
     log(`open bridge unavailable: ${error?.message ?? error}`)
@@ -2988,6 +3505,29 @@ async function npmRegistry() {
 function registerPluginIpc() {
   // Synchronous by design: the plugin window's preload needs the strings
   // before the page renders. The payload is a plain object of short strings.
+  // Mirror input is serialized through one chain. A tap arms the focus a
+  // following keystroke needs, and the two arrive as separate IPC messages
+  // that would otherwise overlap — the type running before the tap it
+  // depended on. Queuing makes each gesture finish before the next starts,
+  // which is also just how a hand works: one thing at a time.
+  const mirrorInput = fn => { state.mirrorQueue = (state.mirrorQueue ?? Promise.resolve()).then(fn).catch(() => {}) }
+  ipcMain.on('miniapp-mirror:tap', (_event, point) => {
+    const x = Number(point?.x)
+    const y = Number(point?.y)
+    if (Number.isFinite(x) && Number.isFinite(y)) mirrorInput(() => state.miniapp?.tapPoint?.(x, y))
+  })
+  ipcMain.on('miniapp-mirror:type', (_event, message) => {
+    if (typeof message?.text === 'string') mirrorInput(() => state.miniapp?.typeIntoFocused?.(message.text))
+  })
+  ipcMain.on('miniapp-mirror:scroll', (_event, message) => {
+    const dy = Number(message?.dy)
+    if (Number.isFinite(dy) && dy !== 0) mirrorInput(() => state.miniapp?.scrollBy?.(dy))
+  })
+  ipcMain.on('phone-install:cancel', () => { state.phoneInstallAbort?.abort() })
+  ipcMain.on('phone-install:close', () => {
+    const win = state.phoneInstallWindow
+    if (win && !win.isDestroyed()) win.close()
+  })
   ipcMain.on('i18n:strings', event => {
     event.returnValue = { locale: getLocale(), messages: messages() }
   })
@@ -3756,16 +4296,74 @@ function pluginItems() {
 }
 
 /**
- * Everything that is not plugins. Plugins are a menu of their own in the
- * menu bar; the tray has no menu bar, so it nests the same items instead.
+ * The things this app can put a screen in front of the agent.
+ *
+ * A browser and a mini program simulator are the same kind of thing from
+ * here: something with a screen, opened and closed, that the agent drives
+ * through the same socket and the user watches. They were two loose items
+ * beside Settings until there were two of them, at which point the grouping
+ * is what says they are alternatives rather than unrelated features — and it
+ * is where a phone goes when there is one.
+ *
+ * The accelerator stays on the browser inside the submenu. A keystroke does
+ * not care how deeply its item is nested, and moving the browser one level
+ * down should not cost anyone the shortcut they already use.
  */
-function actionItems() {
+function deviceItems() {
   return [
     {
       label: `${state.panel ? '\u2713' : '\u2007\u2007'} ${t('menu.browser')}`,
       accelerator: 'CommandOrControl+B',
       click: toggleBrowserPanel,
     },
+    {
+      label: `${state.miniapp?.isOpen() || state.devtoolsLaunched ? '\u2713' : '\u2007\u2007'} ${t('menu.miniapp')}`,
+      click: () => { toggleSimulator().catch(error => errorDialog(t('menu.miniapp'), error)) },
+    },
+    ...(state.miniapp?.isOpen() ? [{
+      label: t('menu.miniappMirror'),
+      click: () => { try { openMiniappMirror() } catch (error) { errorDialog(t('menu.miniappMirror'), error) } },
+    }] : []),
+    state.phoneInstalling
+      ? { label: t('menu.phoneInstalling'), enabled: false }
+      : {
+        label: `${state.phone?.isOpen() ? '\u2713' : '\u2007\u2007'} ${t('menu.phone')}`,
+        click: () => { togglePhone().catch(error => errorDialog(t('menu.phone'), error)) },
+      },
+    { type: 'separator' },
+    {
+      label: t('menu.idleClose'),
+      submenu: [5, 15, 30, 0].map(minutes => ({
+        label: `${idleMinutes() === minutes ? '\u2713' : '\u2007\u2007'} ${minutes === 0 ? t('idle.never') : t('idle.after', { minutes })}`,
+        click: () => {
+          writeSettings({ simulatorIdleMinutes: minutes })
+          buildMenu()
+        },
+      })),
+    },
+    {
+      label: t('menu.locations'),
+      submenu: [
+        {
+          label: t('menu.locationDevtools'),
+          click: () => { chooseDevToolsPath().catch(error => errorDialog(t('menu.locations'), error)) },
+        },
+        {
+          label: t('menu.locationAndroid'),
+          click: () => { chooseAndroidSdk().catch(error => errorDialog(t('menu.locations'), error)) },
+        },
+      ],
+    },
+  ]
+}
+
+/**
+ * Everything that is not plugins. Plugins are a menu of their own in the
+ * menu bar; the tray has no menu bar, so it nests the same items instead.
+ */
+function actionItems() {
+  return [
+    { label: t('menu.devices'), submenu: deviceItems() },
     { type: 'separator' },
     {
       label: t('menu.settings'),
@@ -4195,6 +4793,11 @@ if (!locked) {
   // The tray owns app lifetime: a hidden window with a live server is the
   // resident state, so closing windows never quits by itself.
   app.on('window-all-closed', () => {})
+  // Once a minute, not on a deadline: the point is that an hour-old
+  // simulator is gone, not that a sixteenth minute is.
+  const reaper = setInterval(reapIdleSimulators, 60_000)
+  reaper.unref?.()
+
   app.on('before-quit', event => {
     if (state.quitting) return
     state.quitting = true
@@ -4209,6 +4812,14 @@ if (!locked) {
     // decide whether a leftover address belongs to a live app or a dead one.
     state.openBridge?.close()
     state.openBridge = undefined
+    // Nothing is awaited: a DevTools this app started is asked to quit, and
+    // one it merely borrowed is left exactly as it was found.
+    if (state.miniappMirror && !state.miniappMirror.win.isDestroyed()) state.miniappMirror.win.destroy()
+    state.miniappMirror = undefined
+    state.miniapp?.dispose()
+    state.miniapp = undefined
+    state.phone?.dispose()
+    state.phone = undefined
     if (state.child) {
       event.preventDefault()
       log('stopping dsh server')
