@@ -39,6 +39,15 @@ import { addressable, scan } from './miniapp-wxml.js'
 
 /** How many log entries are kept for `console` to return. */
 const LOG_LIMIT = 500
+/**
+ * What a detail-less DevTools error is rendered as.
+ *
+ * A sentence rather than an empty object, and one that says whose it probably
+ * is, so a burst of first-render framework noise reads as noise instead of as
+ * the page falling over. The dedupe folds a burst of identical ones into a
+ * single line.
+ */
+const NOISE = 'detail-less error, likely DevTools framework noise (the render layer emits these on first draw)'
 /** How close together two identical lines have to be to be one line twice. */
 const DEDUPE_MS = 1_000
 
@@ -102,6 +111,21 @@ export function createEngine({ log, chosen } = {}) {
   const evaluate = (source, args = []) =>
     need().send('App.callFunction', { functionDeclaration: source, args })
       .then(answer => answer?.result)
+
+  /**
+   * Calls a wx.* API and gets its result, sync or async.
+   *
+   * The automation protocol's own `callWxMethod` only understands the
+   * callback shape: it injects success/fail and waits. A synchronous API
+   * returns directly and calls neither, so that path waits out the full
+   * request timeout on `getDeviceInfo` and every other Sync-style call. This
+   * runs the API inside the logic layer instead, hands it a success/fail, and
+   * — if neither has fired in a tick — takes the value it returned. One path
+   * for both kinds, which is the only kind of path worth having here.
+   *
+   * @returns {Promise<{result?: any, fail?: string}>}
+   */
+  const callWx = (method, arg = {}) => evaluate(CALL_WX, [method, arg])
 
   const verbs = {
     async open({ project: dir, pure = true }, cwd) {
@@ -236,8 +260,18 @@ export function createEngine({ log, chosen } = {}) {
     async call({ method, args = '[]' }) {
       const parsed = parseJsonArray(args)
       if (parsed.error) return fail(parsed.error)
-      const answer = await need().send('App.callWxMethod', { method, args: parsed.value })
-      return { ok: true, result: JSON.stringify(answer?.result ?? answer, null, 2) }
+      need()
+      // Not `App.callWxMethod`: that path waits for a success/fail callback,
+      // and the synchronous APIs — getDeviceInfo, getWindowInfo,
+      // getAppBaseInfo, everything ending in Sync — never call one, so it sits
+      // there until the request times out thirty seconds later. Running the
+      // API inside callFunction instead takes the sync return when there is
+      // one and awaits the callback when there is not, which is the one path
+      // that serves both. `getSystemInfoSync` still works but warns it is
+      // deprecated; the new split APIs are the ones that only work this way.
+      const outcome = await callWx(method, parsed.value[0] ?? {})
+      if (outcome?.fail !== undefined) return fail(`${method} failed: ${outcome.fail}`)
+      return { ok: true, result: JSON.stringify(outcome?.result, null, 2) }
     },
 
     async mock({ method, result }) {
@@ -316,7 +350,22 @@ export function createEngine({ log, chosen } = {}) {
       logs.push(entry)
       if (logs.length > LOG_LIMIT) logs = logs.slice(-LOG_LIMIT)
     }
-    open.on('App.logAdded', params => keep({ level: params?.type ?? 'log', args: params?.args ?? [] }))
+    open.on('App.logAdded', params => {
+      // The DevTools emits a handful of detail-less `error` entries — a single
+      // empty object each — the first time the render layer is written to, and
+      // they are its own framework noise, not the page's: a console.error hook
+      // inside the app never sees them. They cannot be told apart at the wire
+      // from `console.error(new Error(...))`, which also serialises to an empty
+      // object, so they are not dropped — they are marked. An agent reading
+      // "detail-less error, likely DevTools framework noise" is not sent
+      // chasing a bug the way a bare {} or a stack-less [object] would.
+      const args = params?.args ?? []
+      const empty = params?.type === 'error' && args.length === 1
+        && args[0] && typeof args[0] === 'object' && Object.keys(args[0]).length === 0
+      keep(empty
+        ? { level: 'error', message: NOISE }
+        : { level: params?.type ?? 'log', args })
+    })
     open.on('App.exceptionThrown', params => keep({
       level: 'error',
       message: params?.message ?? params?.stack ?? JSON.stringify(params),
@@ -406,8 +455,10 @@ export function createEngine({ log, chosen } = {}) {
      */
     async viewport() {
       if (!session || session.closed()) return undefined
-      const info = await session.send('App.callWxMethod', { method: 'getSystemInfoSync', args: [] })
-        .then(answer => answer?.result).catch(() => undefined)
+      // getWindowInfo rather than getSystemInfoSync: the same numbers without
+      // the deprecation warning, and through the caller that does not hang on
+      // a synchronous API.
+      const info = await callWx('getWindowInfo', {}).then(out => out?.result).catch(() => undefined)
       if (!info) return undefined
       return { width: info.windowWidth ?? info.screenWidth, height: info.windowHeight ?? info.screenHeight, ratio: info.pixelRatio ?? 1 }
     },
@@ -700,6 +751,26 @@ function readWxml(project, route) {
 // Source for the app's own world. Strings, like every other script this
 // repository sends somewhere else, and written against nothing but the
 // runtime globals every mini program has.
+
+/**
+ * Runs a wx.* API and resolves its result whether it answers by return or by
+ * callback. See {@link callWx} for why this exists.
+ */
+const CALL_WX = `function(method, arg){
+  return new Promise(function(resolve, reject){
+    if (typeof wx[method] !== 'function') { reject('wx.' + method + ' is not a function'); return; }
+    var settled = false;
+    var opts = Object.assign({}, arg || {}, {
+      success: function(res){ if(!settled){ settled=true; resolve({ result: res }); } },
+      fail: function(err){ if(!settled){ settled=true; resolve({ fail: (err && err.errMsg) || String(err) }); } }
+    });
+    var sync;
+    try { sync = wx[method](opts); } catch(e){ reject(String((e && e.message) || e)); return; }
+    // A synchronous API has already returned and will never call success; an
+    // async one has not returned anything useful yet. One tick decides which.
+    setTimeout(function(){ if(!settled){ settled=true; resolve({ result: sync }); } }, 50);
+  });
+}`
 
 const CURRENT_PAGE = 'const stack = getCurrentPages(); const page = stack[stack.length - 1];'
 

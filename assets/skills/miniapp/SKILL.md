@@ -42,7 +42,10 @@ reach for it:
   page re-renders. The direct way to put the app into a state worth looking
   at — far cheaper than tapping towards it, and it reaches states tapping
   cannot produce at all.
-- `call getSystemInfoSync` calls any `wx.*` API in the running app.
+- `call getDeviceInfo` calls any `wx.*` API in the running app — the newer
+  synchronous ones (getDeviceInfo, getWindowInfo, getAppBaseInfo) as well as
+  the callback ones (showToast, request). Prefer these over getSystemInfoSync,
+  which still works but the runtime warns is deprecated.
 - `mock login '{"code":"test"}'` makes a `wx.*` API return a fixed result —
   how you walk a flow that needs login, payment, or a network call, without
   one. Pass no result to put the real API back.
